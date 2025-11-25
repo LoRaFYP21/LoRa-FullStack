@@ -15,11 +15,13 @@ static long toLong(const String& s){ long v=0; bool seen=false; for(uint16_t i=0
 #include <LoRa.h>
 #include "FS.h"
 #include "SPIFFS.h"
+#include <WiFi.h>
+#include <time.h>
 
 // ---------- Radio config (AS923) ----------
 #define FREQ_HZ   923E6      // <- 923 MHz center (make sure your hardware supports it)
 #define LORA_SYNC 0xA5
-#define LORA_SF   8          // Try 9..12 if your link is weak
+#define LORA_SF   11     // Try 9..12 if your link is weak
 
 // Wiring (LilyGo T-Display -> SX127x)
 #define SCK   5
@@ -31,6 +33,27 @@ static long toLong(const String& s){ long v=0; bool seen=false; for(uint16_t i=0
 
 // Optional: force distinct IDs on each board if desired
 // #define MY_NODE_ID "A"    // put "B" on the other board
+
+// ---------- WiFi & Time Configuration ----------
+// Configure these for your location and network
+const char* wifi_ssid = "Thaveesha";        // Replace with your WiFi SSID
+const char* wifi_password = "10101010"; // Replace with your WiFi password
+
+// NTP servers and timezone configuration
+const char* ntp_server1 = "pool.ntp.org";
+const char* ntp_server2 = "time.nist.gov";
+const char* ntp_server3 = "time.google.com";
+
+// Timezone configurations (uncomment the one you need)
+// For Sri Lanka (UTC+5:30)
+const char* time_zone = "IST-5:30";
+// For other locations, use format like:
+// "EST5EDT,M3.2.0,M11.1.0"     // US Eastern
+// "CET-1CEST,M3.5.0,M10.5.0/3" // Central European
+// "JST-9"                       // Japan
+// "AEST-10AEDT,M10.1.0,M4.1.0/3" // Australia Eastern
+
+bool timeInitialized = false;
 
 // ---------- OLED ----------
 #define SCREEN_WIDTH  128
@@ -54,9 +77,9 @@ uint64_t txDataPktsTotal=0, rxDataPktsTotal=0;     // counts MSG + unique MSGF f
 uint64_t txBytesTotal=0,   rxBytesTotal=0;         // app TEXT bytes totals
 
 // ---------- Timing / ARQ knobs ----------
-const size_t  FRAG_CHUNK = 200;                    // text bytes per fragment
+size_t  FRAG_CHUNK = 30;                          // text bytes per fragment (can be changed at runtime)
 const int     FRAG_MAX_TRIES = 8;                  // per-fragment attempts
-const unsigned long FRAG_ACK_TIMEOUT_MS = 1000;    // wait for ACKF
+const unsigned long FRAG_ACK_TIMEOUT_MS = 1500;    // wait for ACKF
 const unsigned long FRAG_SPACING_MS     = 15;      // small guard between tries
 
 const unsigned long BASE_FINAL_ACK_TIMEOUT_MS = 1800; // final ACK wait baseline
@@ -90,17 +113,44 @@ String getTimestampString() {
 
 // Initialize CSV logging files
 bool initCSVLogging() {
-  if (!SPIFFS.begin()) {
-    Serial.println("SPIFFS initialization failed!");
-    return false;
+  Serial.println("🗂️  Initializing SPIFFS filesystem...");
+  
+  if (!SPIFFS.begin(false)) {
+    Serial.println("⚠️  SPIFFS mount failed! Attempting to format...");
+    
+    if (!SPIFFS.begin(true)) {
+      Serial.println("❌ SPIFFS format failed! CSV logging disabled.");
+      return false;
+    }
+    
+    Serial.println("✅ SPIFFS formatted and mounted successfully!");
+  } else {
+    Serial.println("✅ SPIFFS mounted successfully!");
   }
+  
+  // Check SPIFFS info
+  size_t totalBytes = SPIFFS.totalBytes();
+  size_t usedBytes = SPIFFS.usedBytes();
+  Serial.printf("📊 SPIFFS: %u/%u bytes used (%.1f%%)\n", 
+                usedBytes, totalBytes, (float)usedBytes/totalBytes*100.0);
   
   csvTimestamp = getTimestampString();
   String txFilename = "/tx_data_" + csvTimestamp + ".csv";
   String rxFilename = "/rx_data_" + csvTimestamp + ".csv";
   
+  Serial.println("📝 Creating CSV files:");
+  Serial.println("   TX: " + txFilename);
+  Serial.println("   RX: " + rxFilename);
+  
   txCsvFile = SPIFFS.open(txFilename, FILE_WRITE);
   rxCsvFile = SPIFFS.open(rxFilename, FILE_WRITE);
+  
+  if (!txCsvFile || !rxCsvFile) {
+    Serial.println("❌ Failed to create CSV files!");
+    if (txCsvFile) txCsvFile.close();
+    if (rxCsvFile) rxCsvFile.close();
+    return false;
+  }
   
   if (!txCsvFile || !rxCsvFile) {
     Serial.println("Failed to create CSV files!");
@@ -108,8 +158,8 @@ bool initCSVLogging() {
   }
   
   // Write headers
-  txCsvFile.println("time_ms,packet_type,sequence_no,fragment_idx,total_fragments,packet_size_bytes");
-  rxCsvFile.println("time_ms,packet_type,sequence_no,fragment_idx,total_fragments,packet_size_bytes");
+  txCsvFile.println("time_ms,local_time,packet_type,sequence_no,fragment_idx,total_fragments,packet_size_bytes");
+  rxCsvFile.println("time_ms,local_time,packet_type,sequence_no,fragment_idx,total_fragments,packet_size_bytes");
   
   txCsvFile.flush();
   rxCsvFile.flush();
@@ -122,11 +172,101 @@ bool initCSVLogging() {
   return true;
 }
 
+// Initialize WiFi and sync time via NTP
+void initTimeSync() {
+  Serial.println("🌐 Connecting to WiFi...");
+  oled3("WiFi Connecting...", wifi_ssid, "");
+  
+  WiFi.begin(wifi_ssid, wifi_password);
+  
+  int attempts = 0;
+  while (WiFi.status() != WL_CONNECTED && attempts < 20) {
+    delay(500);
+    Serial.print(".");
+    attempts++;
+  }
+  
+  if (WiFi.status() == WL_CONNECTED) {
+    Serial.println();
+    Serial.println("✅ WiFi connected!");
+    Serial.print("IP address: ");
+    Serial.println(WiFi.localIP());
+    
+    // Configure time
+    Serial.println("🕒 Synchronizing time...");
+    oled3("Time Sync...", "Contacting NTP", "servers");
+    
+    configTime(0, 0, ntp_server1, ntp_server2, ntp_server3);
+    setenv("TZ", time_zone, 1);
+    tzset();
+    
+    // Wait for time sync
+    struct tm timeinfo;
+    int sync_attempts = 0;
+    while (!getLocalTime(&timeinfo) && sync_attempts < 10) {
+      delay(1000);
+      Serial.print(".");
+      sync_attempts++;
+    }
+    
+    if (getLocalTime(&timeinfo)) {
+      Serial.println();
+      Serial.println("✅ Time synchronized!");
+      Serial.printf("Current time: %04d-%02d-%02d %02d:%02d:%02d\n",
+                    timeinfo.tm_year + 1900, timeinfo.tm_mon + 1, timeinfo.tm_mday,
+                    timeinfo.tm_hour, timeinfo.tm_min, timeinfo.tm_sec);
+      timeInitialized = true;
+      
+      // Disconnect WiFi to save power (time will continue running)
+      WiFi.disconnect(true);
+      WiFi.mode(WIFI_OFF);
+      Serial.println("📴 WiFi disconnected (time sync complete)");
+    } else {
+      Serial.println();
+      Serial.println("⚠️  Time sync failed! Using relative timestamps.");
+      timeInitialized = false;
+    }
+  } else {
+    Serial.println();
+    Serial.println("⚠️  WiFi connection failed! Using relative timestamps.");
+    timeInitialized = false;
+  }
+}
+
+// Format local system time for CSV logging
+String getLocalTimeString() {
+  if (timeInitialized) {
+    struct tm timeinfo;
+    if (getLocalTime(&timeinfo)) {
+      char timeStr[32];
+      sprintf(timeStr, "%04d-%02d-%02d_%02d:%02d:%02d.%03lu",
+              timeinfo.tm_year + 1900, timeinfo.tm_mon + 1, timeinfo.tm_mday,
+              timeinfo.tm_hour, timeinfo.tm_min, timeinfo.tm_sec,
+              millis() % 1000);  // Add milliseconds from system uptime
+      return String(timeStr);
+    }
+  }
+  
+  // Fallback to uptime-based timestamp if RTC not available
+  unsigned long ms = millis();
+  unsigned long totalSeconds = ms / 1000;
+  unsigned long days = totalSeconds / 86400;
+  unsigned long hours = (totalSeconds % 86400) / 3600;
+  unsigned long minutes = (totalSeconds % 3600) / 60;
+  unsigned long seconds = totalSeconds % 60;
+  unsigned long milliseconds = ms % 1000;
+  
+  char timeStr[32];
+  sprintf(timeStr, "Day%02lu_%02lu:%02lu:%02lu.%03lu", days, hours, minutes, seconds, milliseconds);
+  return String(timeStr);
+}
+
 // Log TX data to CSV
 void logTxData(unsigned long timestamp, const String& packetType, long seqNo, long fragIdx, long totalFrags, size_t packetSize) {
   if (!csvLoggingEnabled || !txCsvFile) return;
   
-  String line = String(timestamp) + "," + packetType + "," + String(seqNo) + "," + 
+  String localTime = getLocalTimeString();
+  String line = String(timestamp) + "," + localTime + "," + packetType + "," + String(seqNo) + "," + 
                 String(fragIdx) + "," + String(totalFrags) + "," + String(packetSize);
   txCsvFile.println(line);
   txCsvFile.flush();
@@ -136,7 +276,8 @@ void logTxData(unsigned long timestamp, const String& packetType, long seqNo, lo
 void logRxData(unsigned long timestamp, const String& packetType, long seqNo, long fragIdx, long totalFrags, size_t packetSize) {
   if (!csvLoggingEnabled || !rxCsvFile) return;
   
-  String line = String(timestamp) + "," + packetType + "," + String(seqNo) + "," + 
+  String localTime = getLocalTimeString();
+  String line = String(timestamp) + "," + localTime + "," + packetType + "," + String(seqNo) + "," + 
                 String(fragIdx) + "," + String(totalFrags) + "," + String(packetSize);
   rxCsvFile.println(line);
   rxCsvFile.flush();
@@ -171,6 +312,7 @@ static long toLong(const String& s){ long v=0; bool seen=false; for(uint16_t i=0
   if(c>='0'&&c<='9'){ v=v*10+(c-'0'); seen=true; } else if(seen) break; } return seen? v:-1; }
 
 // ---------- Forward declarations ----------
+String getLocalTimeString();
 static bool parseMSG (const String& in, String& src,String& dst,long& seq,String& text);
 static bool parseMSGF(const String& in, String& src,String& dst,long& seq,long& idx,long& tot,String& chunk);
 static bool parseACKF(const String& in, String& src,String& dst,long& seq,long& idx);
@@ -474,34 +616,54 @@ bool sendMessageReliable(const String& lineIn){
 void listSPIFFSFiles() {
   Serial.println("=== SPIFFS File List ===");
   
-  File root = SPIFFS.open("/");
-  if (!root) {
-    Serial.println("Failed to open directory");
+  if (!csvLoggingEnabled) {
+    Serial.println("❌ SPIFFS not available - CSV logging disabled");
+    Serial.println("=== End File List ===");
     return;
   }
   
+  File root = SPIFFS.open("/");
+  if (!root) {
+    Serial.println("❌ Failed to open SPIFFS root directory");
+    Serial.println("💡 Try restarting the device to reinitialize SPIFFS");
+    Serial.println("=== End File List ===");
+    return;
+  }
+  
+  bool foundFiles = false;
   File file = root.openNextFile();
   while (file) {
-    Serial.print("FILE: ");
+    Serial.print("📄 FILE: ");
     Serial.print(file.name());
     Serial.print(" (");
     Serial.print(file.size());
     Serial.println(" bytes)");
     file = root.openNextFile();
+    foundFiles = true;
   }
+  
+  if (!foundFiles) {
+    Serial.println("📂 No files found in SPIFFS");
+  }
+  
   Serial.println("=== End File List ===");
 }
 
 // Download a specific file via serial
 void downloadFile(const String& filename) {
+  if (!csvLoggingEnabled) {
+    Serial.println("❌ ERROR: SPIFFS not available - CSV logging disabled");
+    return;
+  }
+  
   if (!SPIFFS.exists(filename)) {
-    Serial.println("ERROR: File not found: " + filename);
+    Serial.println("❌ ERROR: File not found: " + filename);
     return;
   }
   
   File file = SPIFFS.open(filename, "r");
   if (!file) {
-    Serial.println("ERROR: Failed to open file: " + filename);
+    Serial.println("❌ ERROR: Failed to open file: " + filename);
     return;
   }
   
@@ -523,22 +685,59 @@ void downloadFile(const String& filename) {
 
 // Download current session TX file
 void downloadCurrentTxFile() {
-  if (csvTimestamp.length() == 0) {
-    Serial.println("ERROR: No CSV session active");
+  if (!csvLoggingEnabled) {
+    Serial.println("❌ ERROR: SPIFFS not available - CSV logging disabled");
     return;
   }
+  
+  if (csvTimestamp.length() == 0) {
+    Serial.println("❌ ERROR: No CSV session active");
+    Serial.println("💡 CSV session starts automatically when device boots with SPIFFS working");
+    return;
+  }
+  
   String filename = "/tx_data_" + csvTimestamp + ".csv";
   downloadFile(filename);
 }
 
 // Download current session RX file
 void downloadCurrentRxFile() {
-  if (csvTimestamp.length() == 0) {
-    Serial.println("ERROR: No CSV session active");
+  if (!csvLoggingEnabled) {
+    Serial.println("❌ ERROR: SPIFFS not available - CSV logging disabled");
     return;
   }
+  
+  if (csvTimestamp.length() == 0) {
+    Serial.println("❌ ERROR: No CSV session active");
+    Serial.println("💡 CSV session starts automatically when device boots with SPIFFS working");
+    return;
+  }
+  
   String filename = "/rx_data_" + csvTimestamp + ".csv";
   downloadFile(filename);
+}
+
+// Format SPIFFS filesystem (WARNING: Deletes all files)
+void formatSPIFFS() {
+  Serial.println("⚠️  WARNING: This will DELETE ALL files in SPIFFS!");
+  Serial.println("🔄 Formatting SPIFFS filesystem...");
+  
+  if (SPIFFS.format()) {
+    Serial.println("✅ SPIFFS formatted successfully!");
+    Serial.println("🔄 Reinitializing CSV logging...");
+    
+    // Reinitialize CSV logging
+    csvLoggingEnabled = false;
+    csvTimestamp = "";
+    
+    if (initCSVLogging()) {
+      Serial.println("✅ CSV logging reinitialized!");
+    } else {
+      Serial.println("❌ Failed to reinitialize CSV logging");
+    }
+  } else {
+    Serial.println("❌ SPIFFS format failed!");
+  }
 }
 
 // Show help for serial commands
@@ -550,7 +749,13 @@ void showHelp() {
   Serial.println("DOWNLOAD_RX   - Download current RX CSV file");
   Serial.println("DOWNLOAD:<filename> - Download specific file");
   Serial.println("STATS         - Show current session statistics");
-  Serial.println("Normal text   - Send as LoRa message");
+  Serial.println("FRAG_SIZE:<bytes> - Set fragment size (50-250 bytes)");
+  Serial.println("FORMAT_SPIFFS - Format SPIFFS (⚠️ DELETES ALL FILES!)");
+  Serial.println("");
+  Serial.println("📦 Sending Messages:");
+  Serial.println("   Type your message and press Enter");
+  Serial.println("   You'll be prompted for fragment size");
+  Serial.println("   Press Enter to use current: " + String(FRAG_CHUNK) + " bytes");
   Serial.println("=========================");
 }
 
@@ -559,10 +764,13 @@ void showStats() {
   Serial.println("=== Session Statistics ===");
   Serial.println("Session time: " + formatTimestamp(millis() - sessionStartMs));
   Serial.println("Node ID: " + myId);
+  Serial.print("WiFi Status: "); 
+  Serial.println(timeInitialized ? "✅ Synced" : "❌ Not Connected");
   Serial.println("TX packets: " + String(txDataPktsTotal));
   Serial.println("RX packets: " + String(rxDataPktsTotal));
   Serial.println("TX bytes: " + String(txBytesTotal));
   Serial.println("RX bytes: " + String(rxBytesTotal));
+  Serial.println("Fragment size: " + String(FRAG_CHUNK) + " bytes");
   Serial.println("CSV logging: " + String(csvLoggingEnabled ? "ENABLED" : "DISABLED"));
   if (csvLoggingEnabled) {
     Serial.println("Current TX file: /tx_data_" + csvTimestamp + ".csv");
@@ -591,9 +799,51 @@ void processSerialCommand(const String& command) {
     downloadFile(filename);
   } else if (cmd == "STATS") {
     showStats();
+  } else if (cmd.startsWith("FRAG_SIZE:")) {
+    String sizeStr = cmd.substring(10);
+    sizeStr.trim();
+    int requestedSize = sizeStr.toInt();
+    if (requestedSize >= 50 && requestedSize <= 250) {
+      FRAG_CHUNK = requestedSize;
+      Serial.println("✅ Fragment size set to: " + String(FRAG_CHUNK) + " bytes");
+    } else {
+      Serial.println("❌ Invalid fragment size! Must be between 50-250 bytes.");
+      Serial.println("💡 Current fragment size: " + String(FRAG_CHUNK) + " bytes");
+    }
+  } else if (cmd == "FORMAT_SPIFFS") {
+    formatSPIFFS();
   } else {
     // Not a command, treat as normal LoRa message
-    if (command.length()) sendMessageReliable(command);
+    if (command.length()) {
+      // Ask for fragment size before sending
+      Serial.println("📦 Enter fragment size (50-250 bytes) or press Enter for current [" + String(FRAG_CHUNK) + "]: ");
+      
+      unsigned long startWait = millis();
+      while (!Serial.available() && (millis() - startWait) < 10000) {
+        delay(10);
+      }
+      
+      if (Serial.available()) {
+        String fragSizeStr = Serial.readStringUntil('\n');
+        fragSizeStr.trim();
+        
+        if (fragSizeStr.length() > 0) {
+          int requestedSize = fragSizeStr.toInt();
+          if (requestedSize >= 50 && requestedSize <= 250) {
+            FRAG_CHUNK = requestedSize;
+            Serial.println("✅ Fragment size set to: " + String(FRAG_CHUNK) + " bytes");
+          } else {
+            Serial.println("⚠️  Invalid size! Using current: " + String(FRAG_CHUNK) + " bytes");
+          }
+        } else {
+          Serial.println("✅ Using current fragment size: " + String(FRAG_CHUNK) + " bytes");
+        }
+      } else {
+        Serial.println("⏱️  Timeout! Using current fragment size: " + String(FRAG_CHUNK) + " bytes");
+      }
+      
+      sendMessageReliable(command);
+    }
   }
 }
 
@@ -601,6 +851,9 @@ void processSerialCommand(const String& command) {
 void setup(){
   Serial.begin(115200); Serial.setTimeout(10);
   Wire.begin(); if(!display.begin(SSD1306_SWITCHCAPVCC,0x3C)){ Serial.println("SSD1306 fail"); for(;;); }
+
+  // Initialize WiFi and sync time (before other operations)
+  initTimeSync();
 
 #ifdef MY_NODE_ID
   myId = String(MY_NODE_ID);
@@ -628,16 +881,30 @@ void setup(){
     Serial.println("⚠  CSV timing logging disabled (SPIFFS error)");
   }
 
-  oled3("LoRa Chat Ready","ID: "+myId,"923 MHz, SF="+String(LORA_SF));
+  // Display WiFi status on OLED
+  if (timeInitialized) {
+    oled3("LoRa Ready", "ID: "+myId, "WiFi: Synced ✓");
+  } else {
+    oled3("LoRa Ready", "ID: "+myId, "WiFi: NOT Connected");
+  }
+  
   Serial.println("=== LoRa Chat (Reliable + Exact Tries + Timing Analysis) — AS923 (923 MHz) ===");
   Serial.println("115200, Newline. Type and Enter.");
   Serial.print("Node ID: "); Serial.println(myId);
+  Serial.print("WiFi Status: "); 
+  if (timeInitialized) {
+    Serial.println("✅ Connected & Time Synced");
+  } else {
+    Serial.println("❌ NOT Connected (using relative timestamps)");
+  }
+  Serial.print("Fragment Size: "); Serial.print(FRAG_CHUNK); Serial.println(" bytes");
   Serial.println("");
   Serial.println("📋 Serial Commands Available:");
   Serial.println("   HELP          - Show command help");
   Serial.println("   LIST          - List CSV files");
   Serial.println("   DOWNLOAD_TX   - Download TX data");
   Serial.println("   DOWNLOAD_RX   - Download RX data");
+  Serial.println("   FRAG_SIZE:<bytes> - Set fragment size (50-250)");
   Serial.println("   STATS         - Show statistics");
   Serial.println("   Or type any message to send via LoRa");
   Serial.println("");
