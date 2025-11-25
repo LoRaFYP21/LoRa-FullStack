@@ -21,7 +21,7 @@ static long toLong(const String& s){ long v=0; bool seen=false; for(uint16_t i=0
 // ---------- Radio config (AS923) ----------
 #define FREQ_HZ   923E6      // <- 923 MHz center (make sure your hardware supports it)
 #define LORA_SYNC 0xA5
-#define LORA_SF   11     // Try 9..12 if your link is weak
+#define LORA_SF   9     // Try 9..12 if your link is weak
 
 // Wiring (LilyGo T-Display -> SX127x)
 #define SCK   5
@@ -764,8 +764,8 @@ void showStats() {
   Serial.println("=== Session Statistics ===");
   Serial.println("Session time: " + formatTimestamp(millis() - sessionStartMs));
   Serial.println("Node ID: " + myId);
-  Serial.print("WiFi Status: "); 
-  Serial.println(timeInitialized ? "✅ Synced" : "❌ Not Connected");
+  Serial.print("Time Status: "); 
+  Serial.println(timeInitialized ? "✅ NTP Synced" : "❌ No NTP Sync");
   Serial.println("TX packets: " + String(txDataPktsTotal));
   Serial.println("RX packets: " + String(rxDataPktsTotal));
   Serial.println("TX bytes: " + String(txBytesTotal));
@@ -883,19 +883,19 @@ void setup(){
 
   // Display WiFi status on OLED
   if (timeInitialized) {
-    oled3("LoRa Ready", "ID: "+myId, "WiFi: Synced ✓");
+    oled3("LoRa Ready", "ID: "+myId, "Time: Synced ✓");
   } else {
-    oled3("LoRa Ready", "ID: "+myId, "WiFi: NOT Connected");
+    oled3("LoRa Ready", "ID: "+myId, "Time: No Sync");
   }
   
   Serial.println("=== LoRa Chat (Reliable + Exact Tries + Timing Analysis) — AS923 (923 MHz) ===");
   Serial.println("115200, Newline. Type and Enter.");
   Serial.print("Node ID: "); Serial.println(myId);
-  Serial.print("WiFi Status: "); 
+  Serial.print("Time Status: "); 
   if (timeInitialized) {
-    Serial.println("✅ Connected & Time Synced");
+    Serial.println("✅ NTP Synced (WiFi disconnected for power saving)");
   } else {
-    Serial.println("❌ NOT Connected (using relative timestamps)");
+    Serial.println("❌ No NTP Sync (using relative timestamps)");
   }
   Serial.print("Fragment Size: "); Serial.print(FRAG_CHUNK); Serial.println(" bytes");
   Serial.println("");
