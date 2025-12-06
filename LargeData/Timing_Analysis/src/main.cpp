@@ -21,7 +21,7 @@ static long toLong(const String& s){ long v=0; bool seen=false; for(uint16_t i=0
 // ---------- Radio config (AS923) ----------
 #define FREQ_HZ   923E6      // <- 923 MHz center (make sure your hardware supports it)
 #define LORA_SYNC 0xA5
-#define LORA_SF   9     // Try 9..12 if your link is weak
+#define LORA_SF   12   // Try 9..12 if your link is weak
 
 // Wiring (LilyGo T-Display -> SX127x)
 #define SCK   5
@@ -79,10 +79,10 @@ uint64_t txBytesTotal=0,   rxBytesTotal=0;         // app TEXT bytes totals
 // ---------- Timing / ARQ knobs ----------
 size_t  FRAG_CHUNK = 30;                          // text bytes per fragment (can be changed at runtime)
 const int     FRAG_MAX_TRIES = 8;                  // per-fragment attempts
-const unsigned long FRAG_ACK_TIMEOUT_MS = 1500;    // wait for ACKF
+const unsigned long FRAG_ACK_TIMEOUT_MS = 12000;    // wait for ACKF
 const unsigned long FRAG_SPACING_MS     = 15;      // small guard between tries
 
-const unsigned long BASE_FINAL_ACK_TIMEOUT_MS = 1800; // final ACK wait baseline
+const unsigned long BASE_FINAL_ACK_TIMEOUT_MS = 18000; // final ACK wait baseline
 const int     MSG_MAX_TRIES = 3;                   // whole-message attempts
 
 uint32_t txSeq=0;
