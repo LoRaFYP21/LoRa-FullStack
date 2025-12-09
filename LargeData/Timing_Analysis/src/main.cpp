@@ -60,10 +60,16 @@ bool timeInitialized = false;
 #define SCREEN_HEIGHT 64
 Adafruit_SSD1306 display(SCREEN_WIDTH, SCREEN_HEIGHT, &Wire, -1);
 
-static void oled3(const String& a, const String& b="", const String& c="") {
+static unsigned long lastOledEventMs = 0;
+static unsigned long lastClockDrawMs = 0;
+const unsigned long CLOCK_REFRESH_MS = 200;  // refresh rate for clock (shows ms)
+const unsigned long EVENT_HOLD_MS = 2000;     // keep status screens visible before clock resumes
+
+static void oled3(const String& a, const String& b="", const String& c="", bool markEvent=true) {
   display.clearDisplay(); display.setTextSize(1); display.setTextColor(SSD1306_WHITE);
   display.setCursor(0,0); display.println(a); if(b.length()) display.println(b); if(c.length()) display.println(c);
   display.display();
+  if(markEvent) lastOledEventMs = millis();
 }
 
 static void serialPrintLnChunked(const String& s, size_t ch=128){
@@ -298,6 +304,16 @@ String formatTimestamp(unsigned long ms) {
   return String(timeStr);
 }
 
+static void refreshClockOled(){
+  unsigned long now = millis();
+  if(now - lastClockDrawMs < CLOCK_REFRESH_MS) return;     // keep updates lightweight
+  if(now - lastOledEventMs < EVENT_HOLD_MS) return;        // leave recent status on screen
+
+  lastClockDrawMs = now;
+  String header = timeInitialized ? "Time (NTP)" : "Time (uptime)";
+  oled3(header, getLocalTimeString(), "ID: "+myId, false);
+}
+
 // ---------- Helpers ----------
 static String bytesToHuman(uint64_t B){ if(B>=1000000ULL) return String((double)B/1e6,3)+" MB";
   if(B>=1000ULL) return String((double)B/1e3,3)+" kB"; return String((uint64_t)B)+" B"; }
@@ -479,10 +495,10 @@ bool waitForFinalAck(long expectSeq, unsigned long timeoutMs, double &pdrOut, do
           bpsOut = elapsed? (peerBytes*8.0*1000.0/elapsed) : 0.0;
           pdrOut = (txDataPktsTotal>0)? (100.0*(double)peerPkts/(double)txDataPktsTotal) : 0.0;
           int rssi=LoRa.packetRssi(); float snr=LoRa.packetSnr();
-          Serial.printf("[RX %s] ACK OK seq #%ld from %s | peerRxBytes=%llu | peerRxPkts=%llu | PDR=%.1f%% | %s | RSSI %d | SNR %.1f\n",
+          Serial.printf("[RX %s] ACK OK seq #%ld from %s | peerRxBytes=%llu | peerRxPkts=%llu | PDR=%.3f%% | %s | RSSI %d | SNR %.1f\n",
                         formatTimestamp(rxTimestamp).c_str(), seq, s.c_str(), (unsigned long long)peerBytes, (unsigned long long)peerPkts,
                         pdrOut, speedToHuman(bpsOut).c_str(), rssi, snr);
-          oled3("ACK OK ("+String(seq)+")", "PDR "+String(pdrOut,1)+"%  "+bytesToHuman(peerBytes), speedToHuman(bpsOut));
+          oled3("ACK OK ("+String(seq)+")", "PDR "+String(pdrOut,3)+"%  "+bytesToHuman(peerBytes), speedToHuman(bpsOut));
           return true;
         } else {
           Serial.printf("[RX %s] ACK seq #%ld from %s (not for us)\n", 
@@ -973,6 +989,8 @@ void loop(){
     }
     // else: unknown payload, ignore
   }
+
+  refreshClockOled();
 
   delay(1);
 }
