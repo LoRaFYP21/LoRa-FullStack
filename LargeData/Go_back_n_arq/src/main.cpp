@@ -1,5 +1,5 @@
 /*
-  LoRa Serial Chat (Reliable Fragments + Exact Tries) + PDR + Goodput + TIMING CSV + LittleFS
+  LoRa Serial Chat (Go-Back-N ARQ) + PDR + Goodput + TIMING CSV + LittleFS
   ESP32 T-Display + SSD1306 + SX127x (Sandeep Mistry LoRa lib)
   === AS923 variant (923 MHz) ===
 
@@ -8,9 +8,16 @@
 
   role: TX | RX
   event: SESSION_START | MSG_TX | MSG_RX | MSGF_TX | MSGF_RX | ACK_TX | ACK_RX | ACKF_TX | ACKF_RX
-         | WAIT_ACKF_START | WAIT_ACKF_OK | WAIT_ACKF_TO
+         | WAIT_ACKF_START | WAIT_ACKF_OK | WAIT_ACKF_TO | TIMEOUT_WINDOW
          | WAIT_ACK_START  | WAIT_ACK_OK  | WAIT_ACK_TO
          | RETRY_MSG | RETRY_FRAG | ABORT
+
+  Go-Back-N ARQ:
+  - Transmitter sends multiple fragments within a sliding window (default size 4)
+  - Receiver sends cumulative ACKF for highest consecutive fragment received
+  - On ACK, transmitter slides window forward and sends next batch
+  - On timeout, transmitter goes back N and retransmits from unACKed fragment
+  - More efficient than Stop-and-Wait but still simple to implement
 
   Notes:
   - rssi/snr are only meaningful on RX; TX lines print rssi=-, snr=-
@@ -25,6 +32,16 @@
 #include <LoRa.h>
 #include <LittleFS.h>
 #include <FS.h>
+#include <WiFi.h>
+#include <time.h>
+#include <sys/time.h>
+
+// ---------- WiFi & NTP config ----------
+#define WIFI_SSID "Thaveesha"
+#define WIFI_PASSWORD "101010101"
+#define NTP_SERVER "pool.ntp.org"
+#define GMT_OFFSET_SEC 0           // UTC timezone (adjust as needed)
+#define DAYLIGHT_OFFSET_SEC 0      // Daylight saving (0 if not applicable)
 
 // ---------- Radio config (AS923) ----------
 #define FREQ_HZ 923E6
@@ -47,7 +64,113 @@
 #define SCREEN_HEIGHT 64
 Adafruit_SSD1306 display(SCREEN_WIDTH, SCREEN_HEIGHT, &Wire, -1);
 
-static void oled3(const String &a, const String &b = "", const String &c = "")
+// ---------- WiFi & NTP state (declare before functions) ----------
+bool wifiConnected = false;
+bool ntpSynced = false;
+unsigned long lastNtpSyncMs = 0;
+const unsigned long NTP_SYNC_INTERVAL_MS = 3600000; // Sync every hour
+
+// ---------- Forward declarations ----------
+static void oled3(const String &a, const String &b = "", const String &c = "");
+static void initWiFi();
+static void syncNTP();
+static void checkNtpResync();
+static String getFormattedTime();
+
+// ---------- WiFi & NTP functions ----------
+static void initWiFi()
+{
+  oled3("Connecting WiFi...", WIFI_SSID, "");
+  Serial.println("[WiFi] Connecting to " + String(WIFI_SSID));
+  
+  WiFi.mode(WIFI_STA);
+  WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
+  
+  unsigned long wifiStartMs = millis();
+  int attempts = 0;
+  
+  while (WiFi.status() != WL_CONNECTED && (millis() - wifiStartMs) < 15000) {
+    delay(500);
+    Serial.print(".");
+    attempts++;
+  }
+  
+  if (WiFi.status() == WL_CONNECTED) {
+    wifiConnected = true;
+    Serial.println();
+    Serial.println("[WiFi] Connected!");
+    Serial.println("[WiFi] IP: " + WiFi.localIP().toString());
+    Serial.println("[WiFi] RSSI: " + String(WiFi.RSSI()) + " dBm");
+    oled3("WiFi Connected", "IP: " + WiFi.localIP().toString().substring(0, 16), "RSSI: " + String(WiFi.RSSI()));
+    delay(2000);
+  } else {
+    wifiConnected = false;
+    Serial.println();
+    Serial.println("[WiFi] Failed to connect");
+    oled3("WiFi Failed", "Continuing offline", "");
+    delay(2000);
+  }
+}
+
+static void syncNTP()
+{
+  if (!wifiConnected) {
+    Serial.println("[NTP] WiFi not connected, skipping NTP sync");
+    return;
+  }
+  
+  oled3("Syncing NTP...", NTP_SERVER, "");
+  Serial.println("[NTP] Syncing with " + String(NTP_SERVER));
+  
+  configTime(GMT_OFFSET_SEC, DAYLIGHT_OFFSET_SEC, NTP_SERVER);
+  
+  // Wait for time to be set
+  unsigned long ntpStartMs = millis();
+  time_t now = time(nullptr);
+  
+  while (now < 24 * 3600 && (millis() - ntpStartMs) < 15000) {
+    delay(500);
+    Serial.print(".");
+    now = time(nullptr);
+  }
+  
+  if (now > 24 * 3600) {
+    ntpSynced = true;
+    lastNtpSyncMs = millis();
+    Serial.println();
+    Serial.println("[NTP] Synced!");
+    Serial.println("[NTP] Time: " + String(ctime(&now)));
+    oled3("NTP Synced", String(ctime(&now)).substring(0, 20), "");
+    delay(2000);
+  } else {
+    ntpSynced = false;
+    Serial.println();
+    Serial.println("[NTP] Sync failed, using local time");
+    oled3("NTP Failed", "Using local time", "");
+    delay(2000);
+  }
+}
+
+static void checkNtpResync()
+{
+  if (wifiConnected && ntpSynced) {
+    if ((millis() - lastNtpSyncMs) > NTP_SYNC_INTERVAL_MS) {
+      Serial.println("[NTP] Periodic resync triggered");
+      syncNTP();
+    }
+  }
+}
+
+static String getFormattedTime()
+{
+  time_t now = time(nullptr);
+  struct tm *timeinfo = localtime(&now);
+  char buffer[32];
+  strftime(buffer, sizeof(buffer), "%Y-%m-%d %H:%M:%S", timeinfo);
+  return String(buffer);
+}
+
+static void oled3(const String &a, const String &b, const String &c)
 {
   display.clearDisplay();
   display.setTextSize(1);
@@ -76,12 +199,11 @@ String myId = "????????????", dstAny = "FF";       // 12-hex MAC, broadcast dst
 uint64_t txDataPktsTotal = 0, rxDataPktsTotal = 0; // counts MSG + unique MSGF frags
 uint64_t txBytesTotal = 0, rxBytesTotal = 0;       // app TEXT bytes totals
 
-// ---------- Timing / ARQ knobs ----------
-const size_t FRAG_CHUNK = 200;                  // text bytes per fragment
-const int FRAG_MAX_TRIES = 8;                   // per-fragment attempts
-const unsigned long FRAG_ACK_TIMEOUT_MS = 1000; // wait for ACKF
-const unsigned long FRAG_SPACING_MS = 15;       // small guard between tries
-
+// ---------- Timing / ARQ knobs (Go-Back-N) ----------
+const size_t FRAG_CHUNK = 200;                    // text bytes per fragment
+const int GBN_WINDOW_SIZE = 4;                    // go-back-n window size
+const unsigned long GBN_ACK_TIMEOUT_MS = 2000;   // wait for ACK on window
+const unsigned long GBN_FRAG_SPACING_MS = 20;    // spacing between fragment sends
 const unsigned long BASE_FINAL_ACK_TIMEOUT_MS = 1800; // final ACK wait baseline
 const int MSG_MAX_TRIES = 3;                          // whole-message attempts
 
@@ -612,13 +734,62 @@ String joinReasm()
   return out;
 }
 
-// ---------- Blocking waits ----------
-bool waitForAckF(long expectSeq, long expectIdx, unsigned long timeoutMs)
+// ---------- Blocking waits (Go-Back-N) ----------
+// Cumulative ACK tracking for Go-Back-N
+struct GBNWindow {
+  long seq = -1;
+  long tot = 0;
+  long base = 0;           // base of window (first unACKed fragment)
+  unsigned long sendTime[GBN_WINDOW_SIZE];  // time each fragment was sent
+  String fragments[GBN_WINDOW_SIZE];        // fragment payloads for retransmission
+  bool sent[GBN_WINDOW_SIZE];               // whether fragment was sent
+  
+  void reset() {
+    seq = -1;
+    tot = 0;
+    base = 0;
+    for (int i = 0; i < GBN_WINDOW_SIZE; i++) {
+      sendTime[i] = 0;
+      fragments[i] = "";
+      sent[i] = false;
+    }
+  }
+  
+  int windowSize() {
+    return min((long)GBN_WINDOW_SIZE, tot - base);
+  }
+  
+  bool allSent() {
+    for (int i = 0; i < windowSize(); i++) {
+      if (!sent[i]) return false;
+    }
+    return true;
+  }
+  
+  bool windowEmpty() {
+    return base >= tot;
+  }
+};
+
+GBNWindow gbnWindow;
+
+bool waitForWindowAck(long expectSeq, unsigned long timeoutMs)
 {
-  logEvt("TX", "WAIT_ACKF_START", expectSeq, expectIdx, -1, 0, "-", "-", 0);
+  logEvt("TX", "WAIT_ACKF_START", expectSeq, gbnWindow.base, (long)gbnWindow.tot, 0, "-", "-", 0);
   unsigned long deadline = millis() + timeoutMs;
+  
   while ((long)(millis() - deadline) < 0)
   {
+    // Check timeout and resend window if needed
+    unsigned long now = millis();
+    for (int i = 0; i < gbnWindow.windowSize(); i++) {
+      if (gbnWindow.sent[i] && (now - gbnWindow.sendTime[i]) > GBN_ACK_TIMEOUT_MS) {
+        // Timeout on this window - go back N
+        logEvt("TX", "TIMEOUT_WINDOW", expectSeq, gbnWindow.base, (long)gbnWindow.tot, 0, "-", "-", 0);
+        return false;
+      }
+    }
+    
     int psz = LoRa.parsePacket();
     if (psz)
     {
@@ -634,10 +805,16 @@ bool waitForAckF(long expectSeq, long expectIdx, unsigned long timeoutMs)
       if (parseACKF(pkt, s, d, seq, idx))
       {
         logEvtRx("ACKF_RX", seq, idx, -1, pkt.length(), pkt.length(), rssi, snr);
-        if (d == myId && seq == expectSeq && idx == expectIdx)
+        if (d == myId && seq == expectSeq)
         {
-          logEvt("TX", "WAIT_ACKF_OK", seq, idx, -1, 0, "-", "-", 0);
-          return true; // got it
+          // Cumulative ACK: everything up to idx is ACKed
+          if (idx >= gbnWindow.base && idx < gbnWindow.tot) {
+            gbnWindow.base = idx + 1;  // slide window
+            if (gbnWindow.windowEmpty()) {
+              logEvt("TX", "WAIT_ACKF_OK", seq, idx, -1, 0, "-", "-", 0);
+              return true;
+            }
+          }
         }
       }
       else if (parseACK(pkt, s, d, seq, b, k))
@@ -694,7 +871,7 @@ bool waitForAckF(long expectSeq, long expectIdx, unsigned long timeoutMs)
     }
     delay(1);
   }
-  logEvt("TX", "WAIT_ACKF_TO", expectSeq, expectIdx, -1, 0, "-", "-", 0);
+  logEvt("TX", "WAIT_ACKF_TO", expectSeq, gbnWindow.base, (long)gbnWindow.tot, 0, "-", "-", 0);
   return false; // timeout
 }
 
@@ -799,7 +976,7 @@ bool waitForFinalAck(long expectSeq, unsigned long timeoutMs, double &pdrOut, do
   return false; // timeout
 }
 
-// ---------- Send one message reliably ----------
+// ---------- Send one message reliably (Go-Back-N) ----------
 bool sendMessageReliable(const String &lineIn)
 {
   String line = lineIn;
@@ -836,60 +1013,94 @@ bool sendMessageReliable(const String &lineIn)
     }
     else
     {
-      bool fragFailed = false;
-
+      // Go-Back-N fragmented transmission
+      gbnWindow.reset();
+      gbnWindow.seq = seq;
+      gbnWindow.tot = total;
+      gbnWindow.base = 0;
+      
+      // Prepare all fragments
       for (size_t i = 0; i < total; i++)
       {
         size_t off = i * FRAG_CHUNK;
         String chunk = line.substring(off, min(L, off + FRAG_CHUNK));
         String payload = "MSGF," + myId + "," + dstAny + "," + String(seq) + "," + String(i) + "," + String(total) + "," + chunk;
+        gbnWindow.fragments[i] = payload;
+      }
 
-        bool ok = false;
-        for (int ftry = 1; ftry <= FRAG_MAX_TRIES; ++ftry)
+      bool msgFailed = false;
+      unsigned long windowStartTime = millis();
+
+      while (gbnWindow.base < gbnWindow.tot)
+      {
+        // Send fragments within the window
+        for (int i = 0; i < gbnWindow.windowSize(); i++)
         {
-          sendLoRa(payload);
-          size_t pktBytes = payload.length();
-          txDataPktsTotal++;
-          txBytesTotal += chunk.length();
-          logEvtTx("MSGF_TX", seq, (long)i, (long)total, pktBytes, pktBytes);
-
-          ok = waitForAckF((long)seq, (long)i, FRAG_ACK_TIMEOUT_MS);
-          if (ok)
-            break;
-
-          if (ftry < FRAG_MAX_TRIES)
+          int fragIdx = gbnWindow.base + i;
+          if (!gbnWindow.sent[i] && fragIdx < gbnWindow.tot)
           {
-            Serial.println("   -> no ACKF, retrying...");
-            logEvt("TX", "RETRY_FRAG", seq, (long)i, (long)total, 0, "-", "-", 0);
+            String &payload = gbnWindow.fragments[fragIdx];
+            sendLoRa(payload);
+            gbnWindow.sent[i] = true;
+            gbnWindow.sendTime[i] = millis();
+            
+            size_t pktBytes = payload.length();
+            size_t chunkSize = payload.length() - 50; // approximate chunk size (rough estimate)
+            txDataPktsTotal++;
+            txBytesTotal += chunkSize;
+            logEvtTx("MSGF_TX", seq, (long)fragIdx, (long)total, pktBytes, pktBytes);
+            
+            delay(GBN_FRAG_SPACING_MS);
+          }
+        }
+
+        // Wait for ACKs
+        if (gbnWindow.allSent())
+        {
+          if (waitForWindowAck(seq, GBN_ACK_TIMEOUT_MS))
+          {
+            break;  // All fragments ACKed, window complete
           }
           else
           {
-            Serial.println("   -> no ACKF, giving up fragment");
+            // Timeout - go back N
+            Serial.println("  -> Window timeout, retransmitting from fragment " + String(gbnWindow.base));
+            logEvt("TX", "RETRY_FRAG", seq, gbnWindow.base, (long)gbnWindow.tot, 0, "-", "-", 0);
+            
+            // Reset window sent flags to retransmit
+            for (int i = 0; i < gbnWindow.windowSize(); i++) {
+              gbnWindow.sent[i] = false;
+            }
+            
+            if ((millis() - windowStartTime) > (GBN_ACK_TIMEOUT_MS * 3))
+            {
+              msgFailed = true;
+              break;
+            }
           }
-          delay(FRAG_SPACING_MS);
         }
-
-        if (!ok)
-        {
-          fragFailed = true;
-          break;
-        }
+        
+        delay(10);
       }
 
-      if (fragFailed)
+      if (gbnWindow.windowEmpty() && !msgFailed)
       {
-        Serial.println("  -> fragment failed after retries, will retry whole message");
+        // All fragments ACKed
+        double pdr = 0, bps = 0;
+        unsigned long finalWait = BASE_FINAL_ACK_TIMEOUT_MS + total * 300;
+        if (waitForFinalAck(seq, finalWait, pdr, bps))
+        {
+          gbnWindow.reset();
+          return true;
+        }
+
+        Serial.println("  -> final ACK timeout, will retry whole message");
         logEvt("TX", "RETRY_MSG", seq, -1, -1, 0, "-", "-", 0);
         delay(150);
       }
-      else
+      else if (msgFailed)
       {
-        double pdr = 0, bps = 0;
-        unsigned long finalWait = BASE_FINAL_ACK_TIMEOUT_MS + total * 500;
-        if (waitForFinalAck(seq, finalWait, pdr, bps))
-          return true;
-
-        Serial.println("  -> final ACK timeout, will retry whole message");
+        Serial.println("  -> fragments failed after retries, will retry whole message");
         logEvt("TX", "RETRY_MSG", seq, -1, -1, 0, "-", "-", 0);
         delay(150);
       }
@@ -899,6 +1110,7 @@ bool sendMessageReliable(const String &lineIn)
   Serial.println("[ABORT] message failed after MSG_MAX_TRIES");
   logEvt("TX", "ABORT", (long)(txSeq - 1), -1, -1, 0, "-", "-", 0);
   oled3("SEND FAILED", "after retries", "");
+  gbnWindow.reset();
   return false;
 }
 
@@ -942,13 +1154,25 @@ void setup()
   resetReasm();
 
   initCsvLogging(); // <-- start serial CSV output
+  
+  // Initialize WiFi and NTP
+  initWiFi();
+  if (wifiConnected) {
+    syncNTP();
+  }
 
   // CSV header for live serial viewing
   Serial.println("TIM_HDR,nodeId,role,event,seq,idx,tot,bytes,rssi,snr,toa_ms,t_ms,dt_ms");
   logEvt("TX", "SESSION_START", -1, -1, -1, 0, "-", "-", 0);
+  
+  // Display status
+  String wifiStatus = wifiConnected ? ("WiFi: " + WiFi.localIP().toString()) : "WiFi: Offline";
+  String ntpStatus = ntpSynced ? ("NTP: " + getFormattedTime()) : "NTP: Not synced";
 
   oled3("LoRa Chat Ready", "ID: " + myId, "923 MHz, SF=" + String(LORA_SF));
-  Serial.println("=== LoRa Chat (Reliable + Exact Tries) — AS923 (923 MHz) ===");
+  Serial.println("=== LoRa Chat (Go-Back-N ARQ) — AS923 (923 MHz) ===");
+  Serial.println("[WiFi] " + wifiStatus);
+  Serial.println("[NTP] " + ntpStatus);
   Serial.println("115200, Newline. Type and Enter.");
   Serial.println("CSV data stored on ESP32 LittleFS - retrieve after communication");
   Serial.println("Special commands:");
@@ -957,12 +1181,17 @@ void setup()
   Serial.println("  'download rx' - Download RX CSV data");
   Serial.println("  'download timing' - Download timing CSV data");
   Serial.println("  'clear' - Clear all CSV files");
+  Serial.println("  'wifi' - Show WiFi status");
+  Serial.println("  'time' - Show current time (if NTP synced");
   Serial.print("Node ID: ");
   Serial.println(myId);
 }
 
 void loop()
 {
+  // Check for NTP resync every iteration
+  checkNtpResync();
+  
   // 1) Send when user types (plain text lines become a message)
   if (Serial.available())
   {
@@ -994,6 +1223,36 @@ void loop()
       else if (line.equals("clear"))
       {
         clearCsvFiles();
+        return;
+      }
+      else if (line.equals("wifi"))
+      {
+        if (wifiConnected) {
+          Serial.println("[WiFi] Status: Connected");
+          Serial.println("[WiFi] SSID: " + String(WIFI_SSID));
+          Serial.println("[WiFi] IP: " + WiFi.localIP().toString());
+          Serial.println("[WiFi] RSSI: " + String(WiFi.RSSI()) + " dBm");
+        } else {
+          Serial.println("[WiFi] Status: Disconnected");
+          Serial.println("[WiFi] Attempting to reconnect...");
+          initWiFi();
+        }
+        return;
+      }
+      else if (line.equals("time"))
+      {
+        if (ntpSynced) {
+          Serial.println("[NTP] Current time: " + getFormattedTime());
+          Serial.println("[NTP] Last sync: " + String((millis() - lastNtpSyncMs) / 1000) + " seconds ago");
+        } else {
+          Serial.println("[NTP] Time not synced");
+          if (wifiConnected) {
+            Serial.println("[NTP] Attempting NTP sync...");
+            syncNTP();
+          } else {
+            Serial.println("[NTP] WiFi not connected, cannot sync");
+          }
+        }
         return;
       }
       else
