@@ -39,10 +39,10 @@ enum ArqMode
 };
 
 // Choose which ARQ scheme to use for *fragmented* messages:
-ArqMode gArqMode = ARQ_STOP_AND_WAIT;   // change here: S&W / GBN / SR
+ArqMode gArqMode = ARQ_STOP_AND_WAIT; // change here: S&W / GBN / SR
 
 // Window size for Go-Back-N / Selective Repeat
-const size_t ARQ_WINDOW_SIZE = 20;          // small window (RELIABLE)
+const size_t ARQ_WINDOW_SIZE = 20; // small window (RELIABLE)
 
 // Maximum number of fragments we support per message
 const size_t MAX_FRAGMENTS = 512;
@@ -114,9 +114,9 @@ uint64_t txBytesTotal = 0, rxBytesTotal = 0;
 // ---------- Timing / ARQ knobs ----------
 size_t FRAG_CHUNK = 220;
 const int FRAG_MAX_TRIES = 3;
-const unsigned long FRAG_ACK_TIMEOUT_MS = 5000;      // 5 s (enough for LoRa hop)
+const unsigned long FRAG_ACK_TIMEOUT_MS = 5000; // 5 s (enough for LoRa hop)
 const unsigned long FRAG_SPACING_MS = 20;
-const unsigned long LISTEN_AFTER_TX_MS = 40;        // 0.8 s of RX-only per TX
+const unsigned long LISTEN_AFTER_TX_MS = 40; // 0.8 s of RX-only per TX
 
 const int RX_ACK_DELAY_MS = 20;
 

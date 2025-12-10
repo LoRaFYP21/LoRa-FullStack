@@ -1,5 +1,5 @@
 /*
-  LoRa Serial Chat (Reliable Fragments + ARQ Modes) + PDR + Goodput + Distance
+  LoRa Serial Chat (Reliable Fragments + Exact Tries) + PDR + Goodput + Distance
   === PC-Reassembly Version: MCU only forwards fragments/messages to Serial ===
 
   RX side:
@@ -9,19 +9,15 @@
     - Still sends ACK / ACKF to keep the ARQ logic working.
 
   TX side:
-    - Fragmentation is done at MCU for long lines from PC.
-    - ARQ scheme for fragments is selectable:
-        * Stop-and-Wait
-        * Go-Back-N
-        * Selective Repeat
-    - For small single-packet messages: classic stop-and-wait with ACK.
+    - Same fragmentation + ACKF logic as before.
+    - For multi-fragment, we no longer wait for final ACK (only fragment ACKs).
 
   PC side:
-    - TX PC sends lines like:
+    - TX PC can send lines like:
         FILECHUNK:<fname>:<idx>:<tot>:<base64_chunk>
       as ordinary text lines.
     - MCU just sees them as lines and sends them reliably over LoRa.
-    - RX PC reassembles both LoRa fragments and FILECHUNKs to reconstruct files.
+    - RX PC reassembles both LoRa fragments and FILECHUNKs to reconstruct the file.
 */
 
 #include <Wire.h>
@@ -30,27 +26,10 @@
 #include <SPI.h>
 #include <LoRa.h>
 
-// ---------- ARQ mode selection ----------
-enum ArqMode
-{
-    ARQ_STOP_AND_WAIT = 0,
-    ARQ_GO_BACK_N = 1,
-    ARQ_SELECTIVE_REPEAT = 2
-};
-
-// Choose which ARQ scheme to use for *fragmented* messages:
-ArqMode gArqMode = ARQ_STOP_AND_WAIT;   // change here: S&W / GBN / SR
-
-// Window size for Go-Back-N / Selective Repeat
-const size_t ARQ_WINDOW_SIZE = 20;          // small window (RELIABLE)
-
-// Maximum number of fragments we support per message
-const size_t MAX_FRAGMENTS = 512;
-
 // ---------- Radio config (AS923) ----------
 #define FREQ_HZ 923E6
 #define LORA_SYNC 0xA5
-#define LORA_SF 7                    // raise if link is weak (9..12)
+#define LORA_SF 8                    // raise if link is weak (9..12)
 const size_t LORA_MAX_PAYLOAD = 255; // SX127x FIFO/payload byte limit
 
 // Wiring (LilyGo T-Display -> SX127x)
@@ -112,21 +91,17 @@ uint64_t txDataPktsTotal = 0, rxDataPktsTotal = 0;
 uint64_t txBytesTotal = 0, rxBytesTotal = 0;
 
 // ---------- Timing / ARQ knobs ----------
-size_t FRAG_CHUNK = 220;
-const int FRAG_MAX_TRIES = 3;
-const unsigned long FRAG_ACK_TIMEOUT_MS = 5000;      // 5 s (enough for LoRa hop)
+// Keep FRAG_CHUNK small enough that header + chunk <= 255 bytes
+size_t FRAG_CHUNK = 180;
+const int FRAG_MAX_TRIES = 3;                   // Try 3 times max
+const unsigned long FRAG_ACK_TIMEOUT_MS = 1200; // For ACKF
 const unsigned long FRAG_SPACING_MS = 20;
-const unsigned long LISTEN_AFTER_TX_MS = 40;        // 0.8 s of RX-only per TX
 
+// NOTE: Receiver will wait this long before sending ACK to ensure Sender is listening
 const int RX_ACK_DELAY_MS = 20;
 
 uint32_t txSeq = 0;
 unsigned long sessionStartMs = 0;
-
-// ---------- ARQ state arrays ----------
-bool fragAcked[MAX_FRAGMENTS];
-unsigned long fragLastTx[MAX_FRAGMENTS];
-uint8_t fragRetries[MAX_FRAGMENTS];
 
 // ---------- Helpers ----------
 static String bytesToHuman(uint64_t B)
@@ -305,10 +280,10 @@ static bool parseACK(const String &in, String &src, String &dst, long &seq, uint
     return true;
 }
 
-// ---------- Dummy reassembly reset ----------
+// ---------- Dummy reassembly reset (no-op for PC reassembly mode) ----------
 void resetReasm() {}
 
-// ---------- Blocking waits for single-packet messages ----------
+// ---------- Blocking waits ----------
 bool waitForAckF(long expectSeq, long expectIdx, unsigned long timeoutMs)
 {
     unsigned long deadline = millis() + timeoutMs;
@@ -330,12 +305,12 @@ bool waitForAckF(long expectSeq, long expectIdx, unsigned long timeoutMs)
                     return true;
             }
             else if (parseACK(pkt, s, d, seq, b, k))
-            {
-                // ignore
+            { /* ignore */
             }
             else if (parseMSG(pkt, s, d, seq, t))
             {
-                delay(RX_ACK_DELAY_MS);
+                // Handle incoming MSG while waiting
+                delay(RX_ACK_DELAY_MS); // Give sender time to switch to RX
                 String ack = "ACK," + myId + "," + s + "," + String(seq) + "," +
                              String((unsigned long long)(rxBytesTotal + t.length())) + "," +
                              String((unsigned long long)(rxDataPktsTotal + 1));
@@ -387,346 +362,6 @@ bool waitForFinalAck(long expectSeq, unsigned long timeoutMs, double &pdrOut, do
     return false;
 }
 
-// ---------- RX while transmitting (for GBN/SR) ----------
-static void processIncomingWhileTx(uint32_t expectSeq, size_t total)
-{
-    int psz = LoRa.parsePacket();
-    if (!psz)
-        return;
-
-    String pkt;
-    while (LoRa.available())
-        pkt += (char)LoRa.read();
-
-    String s, d, t;
-    long seq = -1, idx = -1, tot = -1;
-    uint64_t b = 0, k = 0;
-
-    if (parseACKF(pkt, s, d, seq, idx))
-    {
-        if (d == myId && seq == (long)expectSeq)
-        {
-            if (idx >= 0 && (size_t)idx < total)
-            {
-                fragAcked[idx] = true;
-                Serial.printf("  [RX ACKF] seq=%ld idx=%ld from=%s\n", seq, idx, s.c_str());
-            }
-        }
-    }
-    else if (parseACK(pkt, s, d, seq, b, k))
-    {
-        // ignore here
-    }
-    else if (parseMSG(pkt, s, d, seq, t))
-    {
-        delay(RX_ACK_DELAY_MS);
-        String ack = "ACK," + myId + "," + s + "," + String(seq) + "," +
-                     String((unsigned long long)(rxBytesTotal + t.length())) + "," +
-                     String((unsigned long long)(rxDataPktsTotal + 1));
-        sendLoRa(ack);
-        Serial.println("[RX Interrupt] MSG from " + s);
-    }
-}
-
-static void listenForAckWindow(uint32_t expectSeq, size_t total, unsigned long durationMs)
-{
-    unsigned long until = millis() + durationMs;
-    while ((long)(millis() - until) < 0)
-    {
-        processIncomingWhileTx(expectSeq, total);
-        delay(2);
-    }
-}
-
-// ---------- Fragment send helpers ----------
-
-// Stop-and-Wait per fragment
-bool sendFragmentsStopAndWait(const String &line, size_t L, size_t total, uint32_t seq)
-{
-    for (size_t i = 0; i < total; i++)
-    {
-        size_t off = i * FRAG_CHUNK;
-        String chunk = line.substring(off, min(L, off + FRAG_CHUNK));
-
-        String payload = "MSGF," + myId + "," + dstAny + "," + String(seq) + "," +
-                         String(i) + "," + String(total) + "," + chunk;
-
-        bool fragOk = false;
-        for (int ftry = 1; ftry <= FRAG_MAX_TRIES; ++ftry)
-        {
-            sendLoRa(payload);
-            txDataPktsTotal++;
-            txBytesTotal += chunk.length();
-
-            Serial.printf("  [S&W FRAG %u/%u] Try %d/%d\n",
-                          (unsigned)(i + 1), (unsigned)total, ftry, FRAG_MAX_TRIES);
-
-            if (waitForAckF((long)seq, (long)i, FRAG_ACK_TIMEOUT_MS))
-            {
-                fragOk = true;
-                break;
-            }
-            delay(FRAG_SPACING_MS);
-        }
-
-        if (!fragOk)
-        {
-            Serial.println("[ABORT] S&W: Frag failed after max retries. Dropping message.");
-            oled3("TX FAILED", "Dropped Frag " + String(i + 1), "");
-            return false;
-        }
-    }
-
-    Serial.printf("[TX DONE] #%lu mode=S&W all fragments ACKed.\n", (unsigned long)seq);
-    return true;
-}
-
-// Go-Back-N
-bool sendFragmentsGoBackN(const String &line, size_t L, size_t total, uint32_t seq)
-{
-    if (total > MAX_FRAGMENTS)
-    {
-        Serial.println("[ERROR] GBN: total fragments > MAX_FRAGMENTS");
-        return false;
-    }
-
-    for (size_t i = 0; i < total; ++i)
-    {
-        fragAcked[i] = false;
-        fragLastTx[i] = 0;
-        fragRetries[i] = 0;
-    }
-
-    size_t base = 0;
-    size_t nextToSend = 0;
-
-    Serial.printf("[GBN] seq=%lu totalFrags=%u window=%u\n",
-                  (unsigned long)seq, (unsigned)total, (unsigned)ARQ_WINDOW_SIZE);
-
-    while (base < total)
-    {
-        unsigned long now = millis();
-
-        // Send new fragments up to window
-        while (nextToSend < total && nextToSend < base + ARQ_WINDOW_SIZE)
-        {
-            size_t off = nextToSend * FRAG_CHUNK;
-            String chunk = line.substring(off, min(L, off + FRAG_CHUNK));
-
-            String payload = "MSGF," + myId + "," + dstAny + "," + String(seq) + "," +
-                             String(nextToSend) + "," + String(total) + "," + chunk;
-
-            sendLoRa(payload);
-            txDataPktsTotal++;
-            txBytesTotal += chunk.length();
-
-            fragLastTx[nextToSend] = now;
-            fragRetries[nextToSend]++;
-
-            Serial.printf("  [GBN TX FRAG %u/%u] (retry %u)\n",
-                          (unsigned)(nextToSend + 1), (unsigned)total,
-                          (unsigned)fragRetries[nextToSend]);
-
-            listenForAckWindow(seq, total, LISTEN_AFTER_TX_MS);
-
-            nextToSend++;
-        }
-
-        // Wait for ACKFs / timeout for base
-        while (true)
-        {
-            processIncomingWhileTx(seq, total);
-
-            while (base < total && fragAcked[base])
-            {
-                base++;
-            }
-
-            if (base >= total)
-            {
-                Serial.printf("[TX DONE] #%lu mode=GBN all fragments ACKed.\n", (unsigned long)seq);
-                return true;
-            }
-
-            if (nextToSend < total && nextToSend < base + ARQ_WINDOW_SIZE)
-            {
-                break;
-            }
-
-            unsigned long now2 = millis();
-
-            if (!fragAcked[base] &&
-                (long)(now2 - fragLastTx[base]) > (long)FRAG_ACK_TIMEOUT_MS)
-            {
-                Serial.printf("  [GBN TIMEOUT] base=%u -> retransmit [%u..%u)\n",
-                              (unsigned)base, (unsigned)base, (unsigned)nextToSend);
-
-                if (fragRetries[base] >= FRAG_MAX_TRIES)
-                {
-                    Serial.println("[ABORT] GBN: base fragment exceeded max retries, dropping message.");
-                    oled3("TX FAILED", "GBN base exceeded", "");
-                    return false;
-                }
-
-                for (size_t j = base; j < nextToSend; ++j)
-                {
-                    size_t off = j * FRAG_CHUNK;
-                    String chunk = line.substring(off, min(L, off + FRAG_CHUNK));
-                    String payload = "MSGF," + myId + "," + dstAny + "," + String(seq) + "," +
-                                     String(j) + "," + String(total) + "," + chunk;
-
-                    sendLoRa(payload);
-                    txDataPktsTotal++;
-                    txBytesTotal += chunk.length();
-
-                    fragLastTx[j] = millis();
-                    fragRetries[j]++;
-
-                    Serial.printf("    [GBN RE-TX FRAG %u/%u] (retry %u)\n",
-                                  (unsigned)(j + 1), (unsigned)total,
-                                  (unsigned)fragRetries[j]);
-
-                    listenForAckWindow(seq, total, LISTEN_AFTER_TX_MS);
-
-                    if (fragRetries[j] > FRAG_MAX_TRIES)
-                    {
-                        Serial.println("[ABORT] GBN: fragment exceeded max retries.");
-                        oled3("TX FAILED", "GBN retries", "");
-                        return false;
-                    }
-                }
-            }
-
-            delay(2);
-        }
-    }
-
-    Serial.printf("[TX DONE] #%lu mode=GBN all fragments ACKed.\n", (unsigned long)seq);
-    return true;
-}
-
-// Selective Repeat
-bool sendFragmentsSelectiveRepeat(const String &line, size_t L, size_t total, uint32_t seq)
-{
-    if (total > MAX_FRAGMENTS)
-    {
-        Serial.println("[ERROR] SR: total fragments > MAX_FRAGMENTS");
-        return false;
-    }
-
-    for (size_t i = 0; i < total; ++i)
-    {
-        fragAcked[i] = false;
-        fragLastTx[i] = 0;
-        fragRetries[i] = 0;
-    }
-
-    size_t base = 0;
-    size_t nextToSend = 0;
-
-    Serial.printf("[SR] seq=%lu totalFrags=%u window=%u\n",
-                  (unsigned long)seq, (unsigned)total, (unsigned)ARQ_WINDOW_SIZE);
-
-    while (base < total)
-    {
-        unsigned long now = millis();
-
-        // Send new fragments within window
-        while (nextToSend < total && nextToSend < base + ARQ_WINDOW_SIZE)
-        {
-            size_t off = nextToSend * FRAG_CHUNK;
-            String chunk = line.substring(off, min(L, off + FRAG_CHUNK));
-
-            String payload = "MSGF," + myId + "," + dstAny + "," + String(seq) + "," +
-                             String(nextToSend) + "," + String(total) + "," + chunk;
-
-            sendLoRa(payload);
-            txDataPktsTotal++;
-            txBytesTotal += chunk.length();
-
-            fragLastTx[nextToSend] = now;
-            fragRetries[nextToSend]++;
-
-            Serial.printf("  [SR TX FRAG %u/%u] (retry %u)\n",
-                          (unsigned)(nextToSend + 1), (unsigned)total,
-                          (unsigned)fragRetries[nextToSend]);
-
-            listenForAckWindow(seq, total, LISTEN_AFTER_TX_MS);
-
-            nextToSend++;
-        }
-
-        unsigned long loopStart = millis();
-
-        while (true)
-        {
-            processIncomingWhileTx(seq, total);
-
-            while (base < total && fragAcked[base])
-            {
-                base++;
-            }
-
-            if (base >= total)
-            {
-                Serial.printf("[TX DONE] #%lu mode=SR all fragments ACKed.\n", (unsigned long)seq);
-                return true;
-            }
-
-            if (nextToSend < total && nextToSend < base + ARQ_WINDOW_SIZE)
-            {
-                break;
-            }
-
-            unsigned long now2 = millis();
-
-            for (size_t j = base; j < nextToSend; ++j)
-            {
-                if (fragAcked[j])
-                    continue;
-
-                if ((long)(now2 - fragLastTx[j]) > (long)FRAG_ACK_TIMEOUT_MS)
-                {
-                    if (fragRetries[j] >= FRAG_MAX_TRIES)
-                    {
-                        Serial.println("[ABORT] SR: fragment exceeded max retries.");
-                        oled3("TX FAILED", "SR retries", "");
-                        return false;
-                    }
-
-                    size_t off = j * FRAG_CHUNK;
-                    String chunk = line.substring(off, min(L, off + FRAG_CHUNK));
-                    String payload = "MSGF," + myId + "," + dstAny + "," + String(seq) + "," +
-                                     String(j) + "," + String(total) + "," + chunk;
-
-                    sendLoRa(payload);
-                    txDataPktsTotal++;
-                    txBytesTotal += chunk.length();
-
-                    fragLastTx[j] = now2;
-                    fragRetries[j]++;
-
-                    Serial.printf("    [SR RE-TX FRAG %u/%u] (retry %u)\n",
-                                  (unsigned)(j + 1), (unsigned)total,
-                                  (unsigned)fragRetries[j]);
-
-                    listenForAckWindow(seq, total, LISTEN_AFTER_TX_MS);
-                }
-            }
-
-            if ((long)(now2 - loopStart) > (long)(FRAG_ACK_TIMEOUT_MS / 2))
-            {
-                break;
-            }
-
-            delay(2);
-        }
-    }
-
-    Serial.printf("[TX DONE] #%lu mode=SR all fragments ACKed.\n", (unsigned long)seq);
-    return true;
-}
-
 // ---------- Send one message reliably ----------
 bool sendMessageReliable(const String &lineIn)
 {
@@ -738,16 +373,11 @@ bool sendMessageReliable(const String &lineIn)
 
     uint32_t seq = txSeq;
     txSeq++;
-
-    Serial.printf("[CHUNK START] seq=%lu L=%u totalFrags=%u\n",
-                  (unsigned long)seq, (unsigned)L, (unsigned)total);
-
-    Serial.printf("[TX START] #%lu len=%u chunks=%u\n",
-                  (unsigned long)seq, (unsigned)L, (unsigned)total);
+    Serial.printf("[TX START] #%lu len=%u chunks=%u\n", (unsigned long)seq, (unsigned)L, (unsigned)total);
 
     if (single)
     {
-        // Single-packet logic
+        // Single-packet logic (uses ACK)
         size_t hdrLen = 4 + myId.length() + 1 + dstAny.length() + 1 + digitsU(seq) + 1;
         size_t maxText = (hdrLen < LORA_MAX_PAYLOAD) ? (LORA_MAX_PAYLOAD - hdrLen) : 0;
         String text = (L <= maxText) ? line : line.substring(0, maxText);
@@ -776,30 +406,46 @@ bool sendMessageReliable(const String &lineIn)
             oled3("TX FAILED", "No ACK", "");
             return false;
         }
-
-        Serial.printf("[TX DONE] #%lu mode=SINGLE\n", (unsigned long)seq);
     }
     else
     {
-        bool ok = false;
-        switch (gArqMode)
+        // Fragmented logic (only ACKF-based reliability)
+        for (size_t i = 0; i < total; i++)
         {
-        case ARQ_STOP_AND_WAIT:
-            Serial.println("[ARQ] Mode = Stop-and-Wait");
-            ok = sendFragmentsStopAndWait(line, L, total, seq);
-            break;
-        case ARQ_GO_BACK_N:
-            Serial.println("[ARQ] Mode = Go-Back-N");
-            ok = sendFragmentsGoBackN(line, L, total, seq);
-            break;
-        case ARQ_SELECTIVE_REPEAT:
-            Serial.println("[ARQ] Mode = Selective Repeat");
-            ok = sendFragmentsSelectiveRepeat(line, L, total, seq);
-            break;
+            size_t off = i * FRAG_CHUNK;
+            String chunk = line.substring(off, min(L, off + FRAG_CHUNK));
+
+            // Build MSGF payload (we know FRAG_CHUNK is safe with header)
+            String payload = "MSGF," + myId + "," + dstAny + "," + String(seq) + "," +
+                             String(i) + "," + String(total) + "," + chunk;
+
+            bool fragAcked = false;
+            for (int ftry = 1; ftry <= FRAG_MAX_TRIES; ++ftry)
+            {
+                sendLoRa(payload);
+                txDataPktsTotal++;
+                txBytesTotal += chunk.length();
+
+                Serial.printf("  [TX FRAG %u/%u] Try %d/%d\n",
+                              (unsigned)(i + 1), (unsigned)total, ftry, FRAG_MAX_TRIES);
+
+                if (waitForAckF((long)seq, (long)i, FRAG_ACK_TIMEOUT_MS))
+                {
+                    fragAcked = true;
+                    break;
+                }
+                delay(FRAG_SPACING_MS);
+            }
+
+            if (!fragAcked)
+            {
+                Serial.println("[ABORT] Frag failed after max retries. Dropping message.");
+                oled3("TX FAILED", "Dropped Frag " + String(i + 1), "");
+                return false;
+            }
         }
 
-        if (!ok)
-            return false;
+        Serial.printf("[TX DONE] #%lu all fragments ACKed (no full ACK).\n", (unsigned long)seq);
     }
 
     return true;
@@ -809,7 +455,7 @@ bool sendMessageReliable(const String &lineIn)
 void setup()
 {
     Serial.begin(115200);
-    Serial.setTimeout(5000); // Allow large FILECHUNK lines
+    Serial.setTimeout(5000); // Allow large FILECHUNK lines from PC
     Wire.begin();
     if (!display.begin(SSD1306_SWITCHCAPVCC, 0x3C))
     {
@@ -832,22 +478,14 @@ void setup()
     LoRa.setSyncWord(LORA_SYNC);
     LoRa.enableCrc();
     LoRa.setTxPower(17, PA_OUTPUT_PA_BOOST_PIN);
-    LoRa.setSignalBandwidth(500E3);
+    LoRa.setSignalBandwidth(125E3);
 
     sessionStartMs = millis();
-    resetReasm();
+    resetReasm(); // no-op now
 
-    String modeStr = "S&W";
-    if (gArqMode == ARQ_GO_BACK_N)
-        modeStr = "GBN";
-    else if (gArqMode == ARQ_SELECTIVE_REPEAT)
-        modeStr = "SR";
-
-    oled3("LoRa Chat Ready", "ID: " + myId, "ARQ: " + modeStr);
+    oled3("LoRa Chat Ready", "ID: " + myId, "PC Reasm Mode");
     Serial.println("=== LoRa Chat (PC Reassembly Mode) ===");
     Serial.println("Type a line and press Enter to send.");
-    Serial.print("ARQ Mode: ");
-    Serial.println(modeStr);
 }
 
 void loop()
@@ -872,9 +510,11 @@ void loop()
         long seq = -1, idx = -1, tot = -1;
         uint64_t b = 0, k = 0;
 
+        // ACK / ACKF packets: just ignore in RX main loop (TX logic handles them)
         if (parseACK(pkt, s, d, seq, b, k) || parseACKF(pkt, s, d, seq, idx))
             return;
 
+        // Non-fragmented message
         if (parseMSG(pkt, s, d, seq, t))
         {
             int rssi = LoRa.packetRssi();
@@ -882,6 +522,8 @@ void loop()
             rxDataPktsTotal++;
             rxBytesTotal += t.length();
 
+            // Forward to PC with metadata
+            // Format: MSG,src,seq,rssi,d_m,text
             String out = "MSG," + s +
                          "," + String(seq) +
                          "," + String(rssi) +
@@ -891,6 +533,7 @@ void loop()
 
             oled3("RX MSG (" + String(seq) + ")", t.substring(0, 16), "d~" + String(d_m, 1) + "m");
 
+            // Send ACK for single-packet message
             delay(RX_ACK_DELAY_MS);
             String ack = "ACK," + myId + "," + s + "," + String(seq) + "," +
                          String((unsigned long long)rxBytesTotal) + "," +
@@ -899,6 +542,7 @@ void loop()
             return;
         }
 
+        // Fragmented message fragment
         if (parseMSGF(pkt, s, d, seq, idx, tot, t))
         {
             int rssi = LoRa.packetRssi();
@@ -907,6 +551,8 @@ void loop()
             rxDataPktsTotal++;
             rxBytesTotal += t.length();
 
+            // Forward fragment to PC for reassembly
+            // Format: FRAG,src,seq,idx,tot,rssi,d_m,chunk
             String out = "FRAG," + s +
                          "," + String(seq) +
                          "," + String(idx) +
@@ -920,10 +566,10 @@ void loop()
                   "i=" + String(idx) + "/" + String(tot),
                   "d~" + String(d_m, 1) + "m");
 
+            // Send ACKF for this fragment
             delay(RX_ACK_DELAY_MS);
             String ackf = "ACKF," + myId + "," + s + "," + String(seq) + "," + String(idx);
             sendLoRa(ackf);
-            Serial.println("[TX ACKF] " + ackf);
             return;
         }
     }
