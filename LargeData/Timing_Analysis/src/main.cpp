@@ -79,10 +79,10 @@ uint64_t txBytesTotal = 0, rxBytesTotal = 0;       // app TEXT bytes totals
 // ---------- Timing / ARQ knobs ----------
 const size_t FRAG_CHUNK = 200;                  // text bytes per fragment
 const int FRAG_MAX_TRIES = 8;                   // per-fragment attempts
-const unsigned long FRAG_ACK_TIMEOUT_MS = 1000; // wait for ACKF
+const unsigned long FRAG_ACK_TIMEOUT_MS = 2000; // wait for ACKF
 const unsigned long FRAG_SPACING_MS = 15;       // small guard between tries
 
-const unsigned long BASE_FINAL_ACK_TIMEOUT_MS = 1800; // final ACK wait baseline
+const unsigned long BASE_FINAL_ACK_TIMEOUT_MS = 2800; // final ACK wait baseline
 const int MSG_MAX_TRIES = 3;                          // whole-message attempts
 
 uint32_t txSeq = 0;
@@ -105,26 +105,26 @@ static void initCsvLogging()
     Serial.println("[ERROR] Failed to mount LittleFS");
     return;
   }
-  
+
   Serial.println("[LOG] LittleFS mounted successfully");
-  
+
   // Create/open CSV files
   txCsvFile = LittleFS.open(txCsvPath, "w");
   rxCsvFile = LittleFS.open(rxCsvPath, "w");
   timingCsvFile = LittleFS.open(timingCsvPath, "w");
-  
+
   if (txCsvFile && rxCsvFile && timingCsvFile)
   {
     // Write CSV headers
     txCsvFile.println("time_ms,packet_type,sequence_no,fragment_idx,total_fragments,packet_size_bytes");
     rxCsvFile.println("time_ms,packet_type,sequence_no,fragment_idx,total_fragments,packet_size_bytes");
     timingCsvFile.println("nodeId,role,event,seq,idx,tot,bytes,rssi,snr,toa_ms,t_ms,dt_ms");
-    
+
     // Flush to ensure data is written
     txCsvFile.flush();
     rxCsvFile.flush();
     timingCsvFile.flush();
-    
+
     Serial.println("[LOG] CSV files created on LittleFS:");
     Serial.println("  - /tx_data.csv");
     Serial.println("  - /rx_data.csv");
@@ -165,7 +165,7 @@ static void writeTxCsv(unsigned long timeMs, const String &packetType, long seqN
     txCsvFile.println(packetSize);
     txCsvFile.flush();
   }
-  
+
   // Also output to serial for monitoring
   Serial.print("TX_CSV:");
   Serial.print(timeMs);
@@ -199,7 +199,7 @@ static void writeRxCsv(unsigned long timeMs, const String &packetType, long seqN
     rxCsvFile.println(packetSize);
     rxCsvFile.flush();
   }
-  
+
   // Also output to serial for monitoring
   Serial.print("RX_CSV:");
   Serial.print(timeMs);
@@ -219,7 +219,7 @@ static void writeRxCsv(unsigned long timeMs, const String &packetType, long seqN
 static void showCsvInfo()
 {
   Serial.println("[LOG] CSV data is stored on LittleFS:");
-  
+
   // Show file sizes
   if (LittleFS.exists(txCsvPath))
   {
@@ -227,21 +227,21 @@ static void showCsvInfo()
     Serial.println("  TX CSV: " + txCsvPath + " (" + String(f.size()) + " bytes)");
     f.close();
   }
-  
+
   if (LittleFS.exists(rxCsvPath))
   {
     File f = LittleFS.open(rxCsvPath, "r");
     Serial.println("  RX CSV: " + rxCsvPath + " (" + String(f.size()) + " bytes)");
     f.close();
   }
-  
+
   if (LittleFS.exists(timingCsvPath))
   {
     File f = LittleFS.open(timingCsvPath, "r");
     Serial.println("  Timing CSV: " + timingCsvPath + " (" + String(f.size()) + " bytes)");
     f.close();
   }
-  
+
   Serial.println("[CMD] Use 'download tx', 'download rx', 'download timing' to get files");
   Serial.println("[CMD] Use 'clear' to delete all CSV files");
 }
@@ -253,14 +253,14 @@ static void downloadCsvFile(const String &filename, const String &filepath)
     Serial.println("[ERROR] File not found: " + filepath);
     return;
   }
-  
+
   File file = LittleFS.open(filepath, "r");
   if (!file)
   {
     Serial.println("[ERROR] Cannot open file: " + filepath);
     return;
   }
-  
+
   String upperFilename = filename;
   upperFilename.toUpperCase();
   Serial.println("=== BEGIN " + upperFilename + " CSV FILE ===");
@@ -269,24 +269,27 @@ static void downloadCsvFile(const String &filename, const String &filepath)
     Serial.write(file.read());
   }
   Serial.println("\n=== END " + upperFilename + " CSV FILE ===");
-  
+
   file.close();
 }
 
 static void clearCsvFiles()
 {
   // Close files first
-  if (txCsvFile) txCsvFile.close();
-  if (rxCsvFile) rxCsvFile.close();
-  if (timingCsvFile) timingCsvFile.close();
-  
+  if (txCsvFile)
+    txCsvFile.close();
+  if (rxCsvFile)
+    rxCsvFile.close();
+  if (timingCsvFile)
+    timingCsvFile.close();
+
   // Delete files
   LittleFS.remove(txCsvPath);
   LittleFS.remove(rxCsvPath);
   LittleFS.remove(timingCsvPath);
-  
+
   Serial.println("[LOG] All CSV files cleared from LittleFS");
-  
+
   // Recreate files
   initCsvLogging();
 }
@@ -425,18 +428,23 @@ static void logEvt(const char *role, const char *event,
 static String getPacketTypeFromEvent(const char *event)
 {
   String eventStr = String(event);
-  if (eventStr.startsWith("MSG_")) return "MSG";
-  else if (eventStr.startsWith("MSGF_")) return "MSGF";
-  else if (eventStr.startsWith("ACK_")) return "ACK";
-  else if (eventStr.startsWith("ACKF_")) return "ACKF";
-  else return "OTHER";
+  if (eventStr.startsWith("MSG_"))
+    return "MSG";
+  else if (eventStr.startsWith("MSGF_"))
+    return "MSGF";
+  else if (eventStr.startsWith("ACK_"))
+    return "ACK";
+  else if (eventStr.startsWith("ACKF_"))
+    return "ACKF";
+  else
+    return "OTHER";
 }
 
 static void logEvtTx(const char *event, long seq, long idx, long tot, long bytes, size_t payloadLen)
 {
   double toa = loraToaMs(payloadLen);
   logEvt("TX", event, seq, idx, tot, bytes, "-", "-", toa);
-  
+
   // Write to simplified Tx.csv with packet details
   String packetType = getPacketTypeFromEvent(event);
   writeTxCsv(millis(), packetType, seq, idx, tot, payloadLen);
@@ -445,7 +453,7 @@ static void logEvtRx(const char *event, long seq, long idx, long tot, long bytes
 {
   double toa = loraToaMs(payloadLen);
   logEvt("RX", event, seq, idx, tot, bytes, String(rssi), String(snr, 1), toa);
-  
+
   // Write to simplified Rx.csv with packet details
   String packetType = getPacketTypeFromEvent(event);
   writeRxCsv(millis(), packetType, seq, idx, tot, payloadLen);

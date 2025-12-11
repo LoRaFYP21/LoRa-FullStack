@@ -7,7 +7,7 @@ Usage:
     python csv_download.py [COM_PORT] [BAUD_RATE]
     
 Example:
-    python csv_download.py COM11 115200
+    python csv_download.py COM9 115200
 """
 
 import serial
@@ -17,7 +17,7 @@ import os
 from datetime import datetime
 
 class ESP32CSVDownloader:
-    def __init__(self, port='COM11', baud=115200, timeout=5):
+    def __init__(self, port='COM9', baud=115200, timeout=5):
         self.port = port
         self.baud = baud
         self.timeout = timeout
@@ -132,7 +132,7 @@ class ESP32CSVDownloader:
 
 def main():
     # Parse command line arguments
-    port = sys.argv[1] if len(sys.argv) > 1 else 'COM11'
+    port = sys.argv[1] if len(sys.argv) > 1 else 'COM9'
     baud = int(sys.argv[2]) if len(sys.argv) > 2 else 115200
     
     print("📡 ESP32 CSV File Downloader")
