@@ -118,6 +118,14 @@ class FileChunkAssembler:
             out_path.write_bytes(raw)
             print(f"[OK] Reassembled and wrote {len(raw)} bytes to '{out_path.resolve()}'")
 
+            # If this was a typed text (temporary name), also print its content to the RX log
+            try:
+                if Path(fname).stem.startswith("_tmp_text_to_send"):
+                    txt = raw.decode("utf-8", errors="ignore")
+                    print(f"[RX TEXT] Full received text ({len(txt)} chars):\n{txt}")
+            except Exception:
+                pass
+
 
 def handle_full_payload(payload: str, file_asm: FileChunkAssembler) -> None:
     """Called when we have a fully reassembled payload from LoRa-level FRAGs."""
@@ -232,10 +240,11 @@ class LoRaSerialSession:
       - extracts MSG/FRAG lines and reassembles
       - signals TX completion events ([TX DONE]/[ABORT]/TX FAILED)
     """
-    def __init__(self, port: str, baud: int, out_dir: Path, quiet: bool = False):
+    def __init__(self, port: str, baud: int, out_dir: Path, quiet: bool = False, log_callback: Optional[callable] = None):
         self.port = port
         self.baud = baud
         self.quiet = quiet
+        self._log_cb = log_callback
 
         self.ser: Optional[serial.Serial] = None
         self._stop = threading.Event()
@@ -288,7 +297,15 @@ class LoRaSerialSession:
         self.ser.flush()
 
     def _log(self, s: str) -> None:
-        if not self.quiet:
+        if self._log_cb:
+            try:
+                self._log_cb(s)
+            except Exception:
+                # Fallback to stdout if callback fails
+                if not self.quiet:
+                    print(s)
+                return
+        if not self._log_cb and not self.quiet:
             print(s)
 
     def _signal_tx(self, ok: bool, reason: str) -> None:
@@ -390,6 +407,7 @@ class LoRaSerialSession:
         tmp = Path(tmp_name)
         tmp.write_bytes(text.encode("utf-8"))
         try:
+            self._log(f"[TX] Text preview ({len(text)} chars): '{text[:120]}'")
             return self.send_file(tmp, **kwargs)
         finally:
             try:
