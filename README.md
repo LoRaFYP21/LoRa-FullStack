@@ -1,6 +1,6 @@
-# Lilygo
+# LoRa-FullStack
 
-This repository contains example sketches, tools, and experiments for LilyGo (TTGO) LoRa development boards used in the FYP (final year project) LoRa experiments.
+This repository contains example sketches, tools, and experiments for building a full-stack LoRa messaging and large-data pipeline on LilyGo (TTGO) boards, used in the FYP (final year project) LoRa experiments.
 
 All folders now carry numeric prefixes for consistent navigation. For per-file descriptions, see `PROJECT_FILE_MAP.md`.
 
@@ -25,7 +25,7 @@ PlatformIO (recommended for the `Timing_Analysis` module)
 - Example (PowerShell):
 
 ```powershell
-cd "d:\\FYP_Simulations\\Lilygo\\03-LargeData\\13-Timing_Analysis"
+cd "d:\\FYP_Simulations\\LoRa-FullStack\\03-LargeData\\13-Timing_Analysis"
 platformio run --target upload
 ```
 
