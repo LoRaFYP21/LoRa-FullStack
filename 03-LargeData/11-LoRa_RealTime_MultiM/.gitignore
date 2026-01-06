@@ -1,0 +1,13 @@
+# Python caches
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# OS artifacts
+*.DS_Store
+
+# GUI temp files
+# _tmp_*.wav
+# _tmp_*.jpg
+# _tmp_text_to_send.txt

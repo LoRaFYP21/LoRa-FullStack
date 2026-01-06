@@ -1,0 +1,4 @@
+Try to increase data rate too: 
+- Change SF, CF and try to increase data rate. 
+
+Try to create a network with a control. 

@@ -1,0 +1,73 @@
+# Project File Map
+
+Top-level numbered layout
+- `00-README.md` — main getting-started guide.
+- `01-Unidirectional/` — basic TX/RX OLED demos.
+- `02-Bidirectional/` — ping-pong initiator/responder pair.
+- `03-LargeData/` — all large-payload, relay, timing, multi-media, and power experiments.
+- `15-Improvements.txt` — running notes from earlier iterations.
+- Generated/support folders (e.g., `.venv/`, `.pio/`, `__pycache__/`, `.vscode/`, and received/sample data) are left unchanged.
+
+Key renames
+- `Bidirectional/` → `02-Bidirectional/`
+- `Unidirectional/` → `01-Unidirectional/`
+- `LargeData/` → `03-LargeData/` (with numbered subfolders: 01–15)
+- `End node with Relay/` → `10-End_Node_With_Relay/`
+- `LoRa_RealTime_MultiM/` → `11-LoRa_RealTime_MultiM/`
+- `LoRa_RealTime_Power/` → `12-LoRa_RealTime_Power/`
+- `Timing_Analysis/` → `13-Timing_Analysis/`
+
+Scripts and purpose
+- **Unidirectional**
+  - `01-Unidirectional/01-LoRa_TX_OLED/01-LoRa_TX_OLED.ino` — simple LoRa transmitter showing status on OLED.
+  - `01-Unidirectional/02-LoRa_RX_OLED/02-LoRa_RX_OLED.ino` — matching receiver with OLED status.
+- **Bidirectional**
+  - `02-Bidirectional/01-LoRa_PingPong_Initiator/01-LoRa_PingPong_Initiator.ino` — starts ping frames and listens for pong replies.
+  - `02-Bidirectional/02-LoRa_PingPong_Responder/02-LoRa_PingPong_Responder.ino` — answers ping frames with pong responses.
+- **LargeData – Fragment iterations**
+  - `03-LargeData/01-LoRa_RealTime_Frag/01-LoRa_RealTime_Frag.ino` — baseline real-time fragmentation/reassembly demo.
+  - `03-LargeData/02-LoRa_RealTime_Frag_2/02-LoRa_RealTime_Frag_2.ino` — v2 fragmentation improvements.
+  - `03-LargeData/03-LoRa_RealTime_Frag_3/03-LoRa_RealTime_Frag_3.ino` — v3 fragmentation refinements.
+  - `03-LargeData/04-LoRa_RealTime_Frag_4/04-LoRa_RealTime_Frag_4.ino` — v4 fragmentation refinements.
+  - `03-LargeData/05-LoRa_RealTime_Frag_5/05-LoRa_RealTime_Frag_5.ino` — v5 fragmentation refinements.
+- **LargeData – MiniSEED streams (v6-v8)**
+  - `03-LargeData/06-LoRa_RealTime_Frag_6/01-rx_miniseed/01-rx_miniseed.ino` — LoRa receiver forwarding MiniSEED fragments.
+  - `03-LargeData/06-LoRa_RealTime_Frag_6/01-rx_miniseed/rx_receive_mseed.py` — host-side reassembler for v6 RX.
+  - `03-LargeData/06-LoRa_RealTime_Frag_6/02-tx_miniseed/02-tx_miniseed.ino` — LoRa transmitter for MiniSEED chunks.
+  - `03-LargeData/06-LoRa_RealTime_Frag_6/02-tx_miniseed/tx_send_mseed.py` — host-side sender for v6 TX.
+  - `03-LargeData/07-LoRa_RealTime_Frag_7/01-rx_miniseed/01-rx_miniseed.ino` — v7 MiniSEED receiver with reliability tweaks.
+  - `03-LargeData/07-LoRa_RealTime_Frag_7/01-rx_miniseed/rx_receive_mseed.py` — host-side reassembler for v7 RX.
+  - `03-LargeData/07-LoRa_RealTime_Frag_7/02-tx_miniseed/02-tx_miniseed.ino` — v7 MiniSEED transmitter.
+  - `03-LargeData/07-LoRa_RealTime_Frag_7/02-tx_miniseed/tx_send_mseed.py` — host-side sender for v7 TX.
+  - `03-LargeData/08-LoRa_RealTime_Frag_8/01-rx_miniseed/01-rx_miniseed.ino` — v8 MiniSEED receiver.
+  - `03-LargeData/08-LoRa_RealTime_Frag_8/01-rx_miniseed/rx_receive_mseed.py` — host-side reassembler for v8 RX.
+  - `03-LargeData/08-LoRa_RealTime_Frag_8/02-tx_miniseed/02-tx_miniseed.ino` — v8 MiniSEED transmitter.
+  - `03-LargeData/08-LoRa_RealTime_Frag_8/02-tx_miniseed/tx_send_mseed.py` — host-side sender for v8 TX.
+- **LargeData – Monitoring and relay**
+  - `03-LargeData/09-LoRa_RealTime_SerialMonitor/09-LoRa_RealTime_SerialMonitor.ino` — serial monitor sketch for live stats.
+  - `03-LargeData/10-End_Node_With_Relay/01-End_Node/01-End_Node.ino` — end-node firmware for relay experiment.
+  - `03-LargeData/10-End_Node_With_Relay/02-Relay_Node/02-Relay_Node.ino` — relay firmware forwarding end-node traffic.
+- **LargeData – Multi-media tunnel**
+  - `03-LargeData/11-LoRa_RealTime_MultiM/11-LoRa_RealTime_MultiM.ino` — MCU firmware for reliable multi-media transfer (ARQ + fragmentation).
+  - `03-LargeData/11-LoRa_RealTime_MultiM/gui_app.py` — Tk UI wrapper around the one-port serial session.
+  - `03-LargeData/11-LoRa_RealTime_MultiM/lora_transceiver.py` — manages a single shared serial session for TX/RX.
+  - `03-LargeData/11-LoRa_RealTime_MultiM/tx_send_file.py` — generic TX-side file sender (chunk + ARQ).
+  - `03-LargeData/11-LoRa_RealTime_MultiM/rx_receive_file.py` — generic RX-side file reassembler.
+  - `03-LargeData/11-LoRa_RealTime_MultiM/ARQ.md` — notes on ARQ strategy.
+  - Docs: `03-LargeData/11-LoRa_RealTime_MultiM/README/Run-Instructions.md` and `03-LargeData/11-LoRa_RealTime_MultiM/README/Windows-Venv-Guide.md` — host setup and run guidance.
+- **LargeData – Power experiments**
+  - `03-LargeData/12-LoRa_RealTime_Power/01-RX/01-RX.ino` — RX firmware for logging link metrics.
+  - `03-LargeData/12-LoRa_RealTime_Power/01-RX/rx_logger.py` — capture RX logs to CSV.
+  - `03-LargeData/12-LoRa_RealTime_Power/01-RX/plot_rx_pathloss.py` — plot RX pathloss vs spreading factor.
+  - `03-LargeData/12-LoRa_RealTime_Power/02-TX/02-TX.ino` — TX firmware for pathloss/ACK experiments.
+  - `03-LargeData/12-LoRa_RealTime_Power/02-TX/tx_trigger.py` — send TX commands and log results to CSV.
+  - `03-LargeData/12-LoRa_RealTime_Power/02-TX/plot_tx_ack_pathloss.py` — plot ACK pathloss vs spreading factor.
+- **LargeData – Timing analysis (PlatformIO)**
+  - `03-LargeData/13-Timing_Analysis/csv_capture.py` — capture timing logs from serial to CSV.
+  - `03-LargeData/13-Timing_Analysis/csv_download.py` — pull CSV results from device storage.
+  - `03-LargeData/13-Timing_Analysis/start_csv_capture.bat` — convenience wrapper to run `csv_capture.py`.
+  - `03-LargeData/13-Timing_Analysis/src/main.cpp` — PlatformIO firmware for timing and reliability experiments.
+  - `03-LargeData/13-Timing_Analysis/src/serial_to_udp.py` — forward serial output to UDP for remote logging.
+  - `03-LargeData/13-Timing_Analysis/README.md` — venv setup and how to run the Python tools in this folder.
+- **Other**
+  - `03-LargeData/14-Resources/` — reference papers and plots used during experimentation.
