@@ -7,9 +7,10 @@ All folders carry numeric prefixes for consistent navigation. For per-file descr
 Contents
 - `01-Node_Basics/` - Simple TX/RX examples with OLED displays.
 - `02-Link_PingPong/` - Ping-pong initiator and responder sketches.
-- `03-FullStack_Experiments/` - Fragmentation iterations, seismic/MiniSEED streaming, relay experiments, multi-media tunnel, power/pathloss tests, timing analysis, and the new reliable mesh.
+- `03-FullStack_Experiments/` - Fragmentation iterations, seismic/MiniSEED streaming, serial monitor, relay experiment, multi-media tunnel, power/pathloss tests, timing analysis, mesh network prototype, and resources.
 
 Prerequisites
+
 - Arduino IDE or PlatformIO (VS Code) for compiling and uploading the `.ino` sketches.
 - Python 3.x for the helper scripts (e.g., CSV capture, serial to UDP). Install `pyserial` if you use serial scripts: `pip install pyserial`.
 - The appropriate LilyGo board support package in Arduino/PlatformIO. Select the board that matches your hardware (e.g., TTGO LoRa32).
@@ -17,10 +18,12 @@ Prerequisites
 Building and uploading
 
 Arduino IDE
+
 - Open the `.ino` file for the example you want (for example `02-Link_PingPong/01-PingPong_Initiator/01-PingPong_Initiator.ino`).
 - Select the correct board and COM port, then click Upload.
 
 PlatformIO (recommended for the `Timing_Analysis` module)
+
 - Open `03-FullStack_Experiments/13-Timing_Analysis` as a PlatformIO project or run from the workspace root with PlatformIO CLI.
 - Example (PowerShell):
 
@@ -30,10 +33,12 @@ platformio run --target upload
 ```
 
 Python utilities
+
 - `03-FullStack_Experiments/13-Timing_Analysis/csv_capture.py` - captures serial timing logs and writes CSV files.
 - `03-FullStack_Experiments/13-Timing_Analysis/src/serial_to_udp.py` - forwards serial data over UDP.
 
 Usage notes
+
 - Most examples are self-contained Arduino sketches. Inspect the top of each `.ino` for hardware-specific configuration (pins, SPI, LoRa frequency, spreading factor, etc.).
 - Large-packet / fragmentation examples may require matching settings on sender and receiver (fragment size, reassembly timeout).
 - The `13-Timing_Analysis` folder contains helper scripts and sample CSVs generated during experiments.
@@ -62,21 +67,25 @@ README.md
   11-Multimedia_Tunnel/(ARQ multi-media tunnel + helpers)
   12-Power_Pathloss_Tests/(RX/TX metrics + plots)
   13-Timing_Analysis/(PlatformIO timing experiments)
-  14-Resources/ (papers and reference plots)
-  15-Improvements.txt
-  16-Reliable_Mesh/(all-in-one mesh node with relays in ACK path)
+  14-Mesh_Network/ (mesh prototype: MeshNode + host interface)
+  Resources/ (papers and reference plots)
+  Improvements.txt
 ```
 
 Troubleshooting
+
 - If uploads fail, double-check board selection and COM/serial port.
 - If serial tools can't access a port, close other programs (Serial Monitor, other terminals) that hold the device.
 - For PlatformIO issues, run `platformio update` and ensure the `platformio.ini` in `13-Timing_Analysis` matches your board.
 
 Contributing
+
 - Feel free to open issues or add PRs with improvements, bug fixes, or updated instructions for specific LilyGo board variants.
 
 Contact
+
 - If this is part of your project, update this README with author/contact info and any experiment-specific notes.
 
 ---
+
 Updated: 2026-01-06
