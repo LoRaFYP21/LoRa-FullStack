@@ -7,7 +7,7 @@ All folders carry numeric prefixes for consistent navigation. For per-file descr
 Contents
 - `01-Node_Basics/` - Simple TX/RX examples with OLED displays.
 - `02-Link_PingPong/` - Ping-pong initiator and responder sketches.
-- `03-FullStack_Experiments/` - Fragmentation iterations, seismic/MiniSEED streaming, relay experiments, multi-media tunnel, power/pathloss tests, and timing analysis.
+- `03-FullStack_Experiments/` - Fragmentation iterations, seismic/MiniSEED streaming, relay experiments, multi-media tunnel, power/pathloss tests, timing analysis, and the new reliable mesh.
 
 Prerequisites
 - Arduino IDE or PlatformIO (VS Code) for compiling and uploading the `.ino` sketches.
@@ -30,8 +30,8 @@ platformio run --target upload
 ```
 
 Python utilities
-- `03-LargeData/13-Timing_Analysis/csv_capture.py` - captures serial timing logs and writes CSV files.
-- `03-LargeData/13-Timing_Analysis/src/serial_to_udp.py` - forwards serial data over UDP.
+- `03-FullStack_Experiments/13-Timing_Analysis/csv_capture.py` - captures serial timing logs and writes CSV files.
+- `03-FullStack_Experiments/13-Timing_Analysis/src/serial_to_udp.py` - forwards serial data over UDP.
 
 Usage notes
 - Most examples are self-contained Arduino sketches. Inspect the top of each `.ino` for hardware-specific configuration (pins, SPI, LoRa frequency, spreading factor, etc.).
@@ -64,6 +64,7 @@ README.md
   13-Timing_Analysis/(PlatformIO timing experiments)
   14-Resources/ (papers and reference plots)
   15-Improvements.txt
+  16-Reliable_Mesh/(all-in-one mesh node with relays in ACK path)
 ```
 
 Troubleshooting

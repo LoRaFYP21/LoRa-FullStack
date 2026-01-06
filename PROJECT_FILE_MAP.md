@@ -15,6 +15,7 @@ Key renames (workflow-oriented)
 - Fragmentation iterations: `01-Fragmentation_v1` … `05-Fragmentation_v5`.
 - MiniSEED streams: `06-Seismic_Stream_v6` … `08-Seismic_Stream_v8` with `01-RX_MiniSEED` and `02-TX_MiniSEED`.
 - Monitor/relay/multi-media/power: `09-Serial_Monitor`, `10-Relay_Experiment`, `11-Multimedia_Tunnel`, `12-Power_Pathloss_Tests`.
+- New mesh: `16-Reliable_Mesh` — unified end/relay node with ACK-aware relays.
 
 Scripts and purpose
 - **Node Basics**
@@ -68,5 +69,8 @@ Scripts and purpose
   - `03-FullStack_Experiments/13-Timing_Analysis/src/main.cpp` — PlatformIO firmware for timing and reliability experiments.
   - `03-FullStack_Experiments/13-Timing_Analysis/src/serial_to_udp.py` — forward serial output to UDP for remote logging.
   - `03-FullStack_Experiments/13-Timing_Analysis/README.md` — venv setup and how to run the Python tools in this folder.
+- **FullStack Experiments — Mesh**
+  - `03-FullStack_Experiments/16-Reliable_Mesh/16-Reliable_Mesh.ino` — unified end/relay node with TTL flooding, reverse-path ACKs, and reliability classes.
+  - `03-FullStack_Experiments/16-Reliable_Mesh/README.md` — usage and packet format.
 - **Other**
   - `03-FullStack_Experiments/14-Resources/` — reference papers and plots used during experimentation.
