@@ -1342,10 +1342,8 @@ void loop()
                 rxBlockBuffer.backDirty = false;         // NEW: Clear dirty flag
                 rxBlockBuffer.lastBackSentAt = millis(); // NEW: Record timestamp
 
-                if (currentBurstEnd >= rxBlockBuffer.total)
-                {
-                    rxBlockBuffer.active = false;
-                }
+                // DON'T set active=false here - keep session alive for retransmits
+                // Session will reset when new seq arrives
             }
         }
     }
